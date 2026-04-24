@@ -21,8 +21,8 @@ def job():
         # Safety: run_scraper() should return an int but guard against list/None
         count = result if isinstance(result, int) else (len(result) if isinstance(result, list) else 0)
         log.info("Scheduled run complete. New leads: %d", count)
-    except Exception as e:
-        log.error("Scraper job failed: %s", e)
+    except Exception:
+        log.exception("Scraper job failed")
 
 
 if __name__ == "__main__":
