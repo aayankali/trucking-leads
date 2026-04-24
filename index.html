@@ -258,7 +258,7 @@
             <span class="ins-badge no">✗ None</span>
             {% endif %}
           </td>
-          <td><span class="date-text">{{ lead.registration_date[:10] if lead.registration_date else '—' }}</span></td>
+          <td><span class="date-text">{{ lead.registration_date.strftime('%Y-%m-%d') if lead.registration_date else '—' }}</span></td>
           <td>
             <form method="post" action="/mark-contacted/{{ lead.id }}" style="display:inline;">
               {% if lead.contacted %}
