@@ -167,6 +167,56 @@ def fetch_new_registrations():
     return leads
 
 
+def layer_fmcsa(lead):
+    if not FMCSA_API_KEY:
+        return lead
+
+    url = f"{FMCSA_BASE}/{lead['dot_number']}"
+
+    try:
+        r = requests.get(url, params={"webKey": FMCSA_API_KEY}, timeout=10)
+
+        if r.status_code != 200:
+            return lead
+
+        data = r.json().get("content", {})
+        if not data:
+            return lead
+
+        # phone
+        phone_raw = data.get("phyTelephone") or data.get("mailingTelephone") or ""
+        phones = extract_phones(phone_raw)
+
+        if phones:
+            lead["phone"] = phones[0]
+            lead["phone_source"] = "fmcsa_api"
+            lead["phone_confidence"] = "high"
+            lead["sources_found"] += 1
+
+        # insurance
+        allowed = (data.get("allowedToOperate") or "").upper()
+        ins_code = data.get("bipdInsuranceOnFile")
+        ins_req  = data.get("bipdInsuranceRequired")
+
+        if ins_code and ins_req:
+            ins_status = "insured"
+        elif ins_req and not ins_code:
+            ins_status = "none"
+        else:
+            ins_status = "unknown"
+
+        lead["has_insurance"] = allowed == "Y" or ins_status == "insured"
+        lead["insurance_status"] = ins_status
+
+    except Exception as e:
+        log.debug(f"FMCSA error {lead['dot_number']}: {e}")
+
+    time.sleep(0.4)
+    return lead
+
+
+
+
 
 def run_scraper():
     log.info("Starting scraper...")
