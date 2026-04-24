@@ -9,28 +9,14 @@ HEADERS = {
 }
 
 DELAY_MIN = 1.2
-DELAY_MAX = 2.5
-TIMEOUT = 15
+DELAY_MAX = 2.2
+TIMEOUT = 12
+
 
 # =============================
-# 🔹 FETCH LEADS (FROM YOUR DB / API)
+# 🔹 PHONE SOURCES
 # =============================
-def fetch_leads():
-    """
-    Replace this with YOUR existing lead fetching logic.
-    This is a fallback so scheduler doesn't break.
-    """
-    try:
-        from database import get_recent_leads  # <-- adjust if needed
-        return get_recent_leads()
-    except:
-        print("[WARN] Could not fetch leads from DB")
-        return []
-
-# =============================
-# 🔹 SOURCES
-# =============================
-def fetch_dot_report(dot):
+def get_phone_from_dot_report(dot):
     try:
         url = f"https://dot.report/{dot}"
         r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
@@ -48,25 +34,9 @@ def fetch_dot_report(dot):
         return None
 
 
-def fetch_safer(dot):
+def get_phone_from_safer(dot):
     try:
         url = f"https://safer.fmcsa.dot.gov/query.asp?query_type=queryCarrierSnapshot&query_param=USDOT&query_string={dot}"
-        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-
-        soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text(" ", strip=True)
-
-        match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{3}[-.\s]?\d{4}", text)
-        return match.group(0) if match else None
-
-    except:
-        return None
-
-
-def fetch_directory(company):
-    try:
-        query = company.replace(" ", "+")
-        url = f"https://www.bing.com/search?q={query}+trucking+phone"
         r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
 
         soup = BeautifulSoup(r.text, "html.parser")
@@ -78,8 +48,26 @@ def fetch_directory(company):
     except:
         return None
 
+
+def get_phone_from_bing(company):
+    try:
+        query = company.replace(" ", "+")
+        url = f"https://www.bing.com/search?q={query}+trucking+phone"
+
+        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text(" ", strip=True)
+
+        match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", text)
+        return match.group(0) if match else None
+
+    except:
+        return None
+
+
 # =============================
-# 🔹 ENRICHMENT
+# 🔹 ENRICH ONE LEAD
 # =============================
 def enrich_lead(lead):
     dot = lead.get("dot_number")
@@ -93,26 +81,26 @@ def enrich_lead(lead):
             phones.append(phone)
             sources.append(source)
 
-    # ⭐ Layer 1 — DOT.report
-    phone = fetch_dot_report(dot)
-    add(phone, "dot_report")
+    # ⭐ Layer 1 — DOT.report (MAIN)
+    p = get_phone_from_dot_report(dot)
+    add(p, "dot_report")
 
     time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
     # ⭐ Layer 2 — SAFER
     if len(phones) < 2:
-        phone = fetch_safer(dot)
-        add(phone, "safer")
+        p = get_phone_from_safer(dot)
+        add(p, "safer")
 
         time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
-    # ⭐ Layer 3 — Directory
+    # ⭐ Layer 3 — Bing fallback
     if len(phones) < 2:
-        phone = fetch_directory(company)
-        add(phone, "directory")
+        p = get_phone_from_bing(company)
+        add(p, "bing")
 
     # =============================
-    # 🔹 CONFIDENCE
+    # 🔹 FINAL DECISION
     # =============================
     final_phone = ""
     confidence = "none"
@@ -135,15 +123,15 @@ def enrich_lead(lead):
 
     return lead
 
-# =============================
-# 🔹 MAIN ENTRY (FIXED)
-# =============================
-def run_scraper(leads=None):
-    # 🔥 FIX: supports both modes
-    if leads is None:
-        leads = fetch_leads()
 
-    print(f"[INFO] Running scraper on {len(leads)} leads")
+# =============================
+# 🔹 MAIN (UNCHANGED SIGNATURE)
+# =============================
+def run_scraper(leads):
+    """
+    DO NOT change this signature.
+    Scheduler already passes leads.
+    """
 
     results = []
 
