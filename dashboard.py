@@ -14,6 +14,31 @@ from flask import Flask, render_template, request, jsonify, send_file, redirect,
 app = Flask(__name__, template_folder=".")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
+def init_db():
+    conn = get_db()
+    with conn.cursor() as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS leads (
+                id SERIAL PRIMARY KEY,
+                dot_number TEXT UNIQUE,
+                mc_number TEXT, company_name TEXT,
+                owner_name TEXT, phone TEXT, email TEXT,
+                address TEXT, city TEXT, state TEXT, zip_code TEXT,
+                entity_type TEXT, operation_type TEXT, cargo_type TEXT,
+                drivers INTEGER, power_units INTEGER, status TEXT,
+                added_date TIMESTAMP, registration_date DATE,
+                contacted BOOLEAN DEFAULT FALSE,
+                notes TEXT DEFAULT '',
+                has_insurance BOOLEAN DEFAULT FALSE
+            )
+        """)
+    conn.commit()
+    conn.close()
+
+with app.app_context():
+    init_db()
+    
+
 
 def get_db():
     return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
