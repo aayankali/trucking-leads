@@ -2,155 +2,116 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Trucking Lead Dashboard</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f4f5f7; color: #1a1a2e; font-size: 14px; }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f5f7;color:#1a1a2e;font-size:14px}
+    .nav{background:#1a1a2e;color:#fff;padding:0 24px;display:flex;align-items:center;justify-content:space-between;height:56px}
+    .nav-brand{font-size:16px;font-weight:600;display:flex;align-items:center;gap:10px}
+    .nav-sub{font-size:12px;color:#8b8fa8}
+    .badge-live{background:#22c55e;color:#fff;font-size:11px;font-weight:600;padding:3px 8px;border-radius:20px}
+    .container{max-width:1500px;margin:0 auto;padding:24px 20px}
+    .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px}
+    .stat-card{background:#fff;border-radius:10px;padding:16px 18px;border:1px solid #e5e7eb}
+    .stat-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+    .stat-value{font-size:26px;font-weight:700;color:#1a1a2e}
+    .stat-value.blue{color:#2563eb}.stat-value.green{color:#16a34a}.stat-value.red{color:#dc2626}
+    .stat-value.amber{color:#d97706}.stat-value.purple{color:#7c3aed}
+    .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:#6b7280;margin-bottom:14px;align-items:center;background:#fff;padding:12px 16px;border-radius:8px;border:1px solid #e5e7eb}
+    .legend strong{color:#374151}
+    .filters{background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:14px 18px;margin-bottom:18px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+    .filter-group{display:flex;flex-direction:column;gap:4px}
+    .filter-group label{font-size:11px;color:#6b7280;font-weight:500;text-transform:uppercase;letter-spacing:.4px}
+    .filters input,.filters select{height:36px;border:1px solid #d1d5db;border-radius:6px;padding:0 10px;font-size:13px;color:#1a1a2e;background:#fff;outline:none}
+    .filters input[type="text"]{width:190px}.filters input[type="date"]{width:138px}.filters select{width:130px}
+    .btn{height:36px;padding:0 16px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:none;text-decoration:none;display:inline-flex;align-items:center;gap:5px}
+    .btn-primary{background:#2563eb;color:#fff}.btn-outline{background:#fff;color:#374151;border:1px solid #d1d5db}
+    .btn-green{background:#16a34a;color:#fff}
+    .filter-spacer{flex:1}
+    .table-wrap{background:#fff;border-radius:10px;border:1px solid #e5e7eb;overflow:hidden}
+    .table-header{padding:12px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f3f4f6}
+    .table-title{font-size:14px;font-weight:600}.table-count{font-size:12px;color:#6b7280}
+    table{width:100%;border-collapse:collapse}
+    thead th{background:#f9fafb;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:#6b7280;padding:9px 12px;text-align:left;border-bottom:1px solid #e5e7eb;white-space:nowrap}
+    tbody tr{border-bottom:1px solid #f3f4f6;transition:background .1s}
+    tbody tr:hover{background:#f9fafb}
+    tbody tr.row-hot{background:#fff8f8}
+    tbody tr:last-child{border-bottom:none}
+    td{padding:10px 12px;vertical-align:middle;font-size:13px;color:#374151}
+    .company-name{font-weight:600;color:#1a1a2e;max-width:180px}
+    .dot-badge{font-size:11px;background:#eff6ff;color:#1d4ed8;padding:2px 6px;border-radius:4px;font-family:monospace}
+    .mc-badge{font-size:11px;background:#f0fdf4;color:#15803d;padding:2px 6px;border-radius:4px;font-family:monospace}
+    .state-pill{font-size:11px;background:#f4f5f7;color:#374151;padding:2px 7px;border-radius:10px;font-weight:600}
+    .phone-link{color:#2563eb;text-decoration:none;font-weight:500}
+    .phone-link:hover{text-decoration:underline}
+    .email-link{color:#7c3aed;text-decoration:none;font-size:12px}
+    .website-link{color:#0d9488;text-decoration:none;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block}
 
-    .nav { background: #1a1a2e; color: #fff; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
-    .nav-brand { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-    .nav-brand span { font-size: 20px; }
-    .nav-sub { font-size: 12px; color: #8b8fa8; }
-    .nav-right { display: flex; align-items: center; gap: 12px; }
-    .badge-live { background: #22c55e; color: #fff; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 20px; }
+    /* Confidence badges */
+    .conf{font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;white-space:nowrap}
+    .conf-high  {background:#dcfce7;color:#15803d}
+    .conf-medium{background:#fef9c3;color:#a16207}
+    .conf-none  {background:#f3f4f6;color:#9ca3af}
 
-    .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
+    /* Insurance badges */
+    .ins{font-size:11px;font-weight:600;padding:3px 8px;border-radius:10px;white-space:nowrap}
+    .ins-none   {background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+    .ins-unknown{background:#fff7ed;color:#c2410c;border:1px solid #fed7aa}
+    .ins-partial{background:#fefce8;color:#a16207;border:1px solid #fde047}
+    .ins-insured{background:#f0fdf4;color:#15803d;border:1px solid #86efac}
 
-    /* Stats — 6 cards */
-    .stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 24px; }
-    .stat-card { background: #fff; border-radius: 10px; padding: 16px 18px; border: 1px solid #e5e7eb; }
-    .stat-label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
-    .stat-value { font-size: 26px; font-weight: 700; color: #1a1a2e; }
-    .stat-value.green  { color: #16a34a; }
-    .stat-value.blue   { color: #2563eb; }
-    .stat-value.amber  { color: #d97706; }
-    .stat-value.teal   { color: #0d9488; }
-    .stat-value.red    { color: #dc2626; }
-
-    /* Filters */
-    .filters { background: #fff; border-radius: 10px; border: 1px solid #e5e7eb; padding: 16px 20px; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
-    .filter-group { display: flex; flex-direction: column; gap: 4px; }
-    .filter-group label { font-size: 11px; color: #6b7280; font-weight: 500; text-transform: uppercase; letter-spacing: .4px; }
-    .filters input, .filters select { height: 36px; border: 1px solid #d1d5db; border-radius: 6px; padding: 0 10px; font-size: 13px; color: #1a1a2e; background: #fff; outline: none; transition: border .15s; }
-    .filters input:focus, .filters select:focus { border-color: #2563eb; }
-    .filters input[type="text"] { width: 200px; }
-    .filters input[type="date"] { width: 140px; }
-    .filters select { width: 130px; }
-    /* Insurance select gets a subtle teal tint when active */
-    .filters select.ins-active { border-color: #0d9488; background: #f0fdfa; }
-    .btn { height: 36px; padding: 0 16px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: all .15s; }
-    .btn-primary { background: #2563eb; color: #fff; }
-    .btn-primary:hover { background: #1d4ed8; }
-    .btn-outline { background: #fff; color: #374151; border: 1px solid #d1d5db; }
-    .btn-outline:hover { background: #f9fafb; }
-    .btn-green { background: #16a34a; color: #fff; }
-    .btn-green:hover { background: #15803d; }
-    .filter-spacer { flex: 1; }
-
-    /* Table */
-    .table-wrap { background: #fff; border-radius: 10px; border: 1px solid #e5e7eb; overflow: hidden; }
-    .table-header { padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f3f4f6; }
-    .table-title { font-size: 14px; font-weight: 600; color: #1a1a2e; }
-    .table-count { font-size: 12px; color: #6b7280; }
-    table { width: 100%; border-collapse: collapse; }
-    thead th { background: #f9fafb; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: #6b7280; padding: 10px 14px; text-align: left; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
-    tbody tr { border-bottom: 1px solid #f3f4f6; transition: background .1s; }
-    tbody tr:hover { background: #f9fafb; }
-    tbody tr:last-child { border-bottom: none; }
-    td { padding: 11px 14px; vertical-align: middle; font-size: 13px; color: #374151; }
-    .company-name { font-weight: 600; color: #1a1a2e; }
-    .dot-badge { font-size: 11px; background: #eff6ff; color: #1d4ed8; padding: 2px 7px; border-radius: 4px; font-family: monospace; }
-    .mc-badge  { font-size: 11px; background: #f0fdf4; color: #15803d; padding: 2px 7px; border-radius: 4px; font-family: monospace; }
-    .state-pill { font-size: 11px; background: #f4f5f7; color: #374151; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
-    .phone-link { color: #2563eb; text-decoration: none; }
-    .phone-link:hover { text-decoration: underline; }
-    .date-text { font-size: 12px; color: #9ca3af; }
-
-    /* Insurance badge */
-    .ins-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 12px; white-space: nowrap; }
-    .ins-badge.yes { background: #f0fdf4; color: #15803d; border: 1px solid #86efac; }
-    .ins-badge.no  { background: #fef2f2; color: #b91c1c; border: 1px solid #fca5a5; }
-
-    /* Contact toggle */
-    .contact-btn { font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer; border: 1px solid; font-weight: 500; transition: all .15s; }
-    .contact-btn.fresh { background: #fff; border-color: #d1d5db; color: #374151; }
-    .contact-btn.fresh:hover { background: #f0fdf4; border-color: #16a34a; color: #15803d; }
-    .contact-btn.done  { background: #f0fdf4; border-color: #86efac; color: #15803d; }
-    .contact-btn.done:hover { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
-
-    /* Note cell */
-    .note-input { width: 100%; border: 1px solid transparent; border-radius: 4px; padding: 3px 6px; font-size: 12px; color: #374151; background: transparent; outline: none; font-family: inherit; }
-    .note-input:hover { border-color: #d1d5db; background: #fff; }
-    .note-input:focus { border-color: #2563eb; background: #fff; }
-
-    /* Pagination */
-    .pagination { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 16px 20px; border-top: 1px solid #f3f4f6; }
-    .page-btn { height: 32px; min-width: 32px; padding: 0 10px; border: 1px solid #e5e7eb; border-radius: 5px; background: #fff; color: #374151; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; text-decoration: none; transition: all .1s; }
-    .page-btn:hover { background: #f3f4f6; }
-    .page-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
-    .page-btn.disabled { opacity: .4; pointer-events: none; }
-    .page-info { font-size: 12px; color: #6b7280; padding: 0 8px; }
-
-    .empty { text-align: center; padding: 60px 20px; color: #9ca3af; }
-    .empty-icon { font-size: 40px; margin-bottom: 12px; }
-    .empty p { font-size: 14px; margin-bottom: 6px; }
-    .empty small { font-size: 12px; }
-
-    @media (max-width: 1100px) {
-      .stats { grid-template-columns: repeat(3, 1fr); }
-    }
-    @media (max-width: 700px) {
-      .stats { grid-template-columns: repeat(2, 1fr); }
-      table { font-size: 12px; }
-      td, thead th { padding: 8px 10px; }
-    }
+    .contact-btn{font-size:11px;padding:4px 9px;border-radius:4px;cursor:pointer;border:1px solid;font-weight:500}
+    .contact-btn.fresh{background:#fff;border-color:#d1d5db;color:#374151}
+    .contact-btn.fresh:hover{background:#f0fdf4;border-color:#16a34a;color:#15803d}
+    .contact-btn.done{background:#f0fdf4;border-color:#86efac;color:#15803d}
+    .contact-btn.done:hover{background:#fef2f2;border-color:#fca5a5;color:#b91c1c}
+    .note-input{width:100%;border:1px solid transparent;border-radius:4px;padding:3px 5px;font-size:12px;color:#374151;background:transparent;outline:none;font-family:inherit}
+    .note-input:hover{border-color:#d1d5db;background:#fff}
+    .note-input:focus{border-color:#2563eb;background:#fff}
+    .pagination{display:flex;align-items:center;justify-content:center;gap:5px;padding:14px;border-top:1px solid #f3f4f6}
+    .page-btn{height:30px;min-width:30px;padding:0 9px;border:1px solid #e5e7eb;border-radius:5px;background:#fff;color:#374151;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none}
+    .page-btn.active{background:#2563eb;color:#fff;border-color:#2563eb}
+    .page-btn.disabled{opacity:.4;pointer-events:none}
+    .page-info{font-size:12px;color:#6b7280;padding:0 6px}
+    .empty{text-align:center;padding:60px 20px;color:#9ca3af}
+    @media(max-width:1100px){.stats{grid-template-columns:repeat(3,1fr)}}
   </style>
 </head>
 <body>
-
 <nav class="nav">
   <div class="nav-brand">
     <span>🚛</span>
-    <div>
-      <div>Trucking Lead Dashboard</div>
-      <div class="nav-sub">FMCSA New Registrations</div>
-    </div>
+    <div><div>Trucking Lead Dashboard</div><div class="nav-sub">5-Layer Enrichment Pipeline · FMCSA</div></div>
   </div>
-  <div class="nav-right">
+  <div style="display:flex;align-items:center;gap:12px">
     <span class="badge-live">● LIVE</span>
-    <span style="color:#8b8fa8;font-size:12px;">Auto-updates every 24h</span>
+    <span style="color:#8b8fa8;font-size:12px">Auto-updates every 24h</span>
   </div>
 </nav>
 
 <div class="container">
-
-  <!-- Stats (6 cards) -->
+  <!-- Stats -->
   <div class="stats">
-    <div class="stat-card">
-      <div class="stat-label">Total Leads</div>
-      <div class="stat-value blue">{{ stats.total }}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Added Today</div>
-      <div class="stat-value green">{{ stats.today }}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Fresh</div>
-      <div class="stat-value amber">{{ stats.fresh }}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Contacted</div>
-      <div class="stat-value">{{ stats.contacted }}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Insured</div>
-      <div class="stat-value teal">{{ stats.insured }}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">No Insurance</div>
-      <div class="stat-value red">{{ stats.no_insurance }}</div>
-    </div>
+    <div class="stat-card"><div class="stat-label">Total Leads</div><div class="stat-value blue">{{ stats.total }}</div></div>
+    <div class="stat-card"><div class="stat-label">Added Today</div><div class="stat-value green">{{ stats.today }}</div></div>
+    <div class="stat-card"><div class="stat-label">With Phone</div><div class="stat-value purple">{{ stats.with_phone }}</div></div>
+    <div class="stat-card"><div class="stat-label">High Confidence</div><div class="stat-value green">{{ stats.high_conf }}</div></div>
+    <div class="stat-card"><div class="stat-label">Need Insurance 🔥</div><div class="stat-value red">{{ stats.no_insurance }}</div></div>
+    <div class="stat-card"><div class="stat-label">Contacted</div><div class="stat-value amber">{{ stats.contacted }}</div></div>
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <strong>Phone confidence:</strong>
+    <span><span class="conf conf-high">HIGH</span> Verified 2+ sources</span>
+    <span><span class="conf conf-medium">MEDIUM</span> 1 trusted source</span>
+    <span><span class="conf conf-none">NONE</span> Not found</span>
+    &nbsp;|&nbsp;
+    <strong>Insurance:</strong>
+    <span><span class="ins ins-none">🔥 No insurance</span> Call first</span>
+    <span><span class="ins ins-unknown">⚡ Unknown</span> Brand new</span>
+    <span><span class="ins ins-insured">✓ Insured</span> Covered</span>
   </div>
 
   <!-- Filters -->
@@ -158,55 +119,62 @@
     <div class="filters">
       <div class="filter-group">
         <label>Search</label>
-        <input type="text" name="search" placeholder="Company, name, DOT, phone..." value="{{ filters.search }}"/>
+        <input type="text" name="search" placeholder="Company, DOT, phone, city..." value="{{ filters.search }}"/>
       </div>
       <div class="filter-group">
         <label>State</label>
         <select name="state">
           <option value="">All States</option>
-          {% for s in states %}
-          <option value="{{ s }}" {% if filters.state == s %}selected{% endif %}>{{ s }}</option>
-          {% endfor %}
+          {% for s in states %}<option value="{{ s }}" {% if filters.state==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
         </select>
       </div>
       <div class="filter-group">
-        <label>Reg. From</label>
+        <label>Insurance</label>
+        <select name="insurance">
+          <option value="">All</option>
+          <option value="hot"     {% if filters.insurance=='hot'     %}selected{% endif %}>🔥 Hot leads</option>
+          <option value="none"    {% if filters.insurance=='none'    %}selected{% endif %}>No insurance</option>
+          <option value="unknown" {% if filters.insurance=='unknown' %}selected{% endif %}>Unknown</option>
+          <option value="insured" {% if filters.insurance=='insured' %}selected{% endif %}>Insured</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Confidence</label>
+        <select name="confidence">
+          <option value="">All</option>
+          <option value="high"   {% if filters.confidence=='high'   %}selected{% endif %}>High only</option>
+          <option value="medium" {% if filters.confidence=='medium' %}selected{% endif %}>Medium+</option>
+          <option value="none"   {% if filters.confidence=='none'   %}selected{% endif %}>No phone</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>From</label>
         <input type="date" name="date_from" value="{{ filters.date_from }}"/>
       </div>
       <div class="filter-group">
-        <label>Reg. To</label>
+        <label>To</label>
         <input type="date" name="date_to" value="{{ filters.date_to }}"/>
       </div>
       <div class="filter-group">
         <label>Status</label>
         <select name="contacted">
           <option value="">All</option>
-          <option value="0" {% if filters.contacted == '0' %}selected{% endif %}>Fresh only</option>
-          <option value="1" {% if filters.contacted == '1' %}selected{% endif %}>Contacted</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <label>Insurance</label>
-        <select name="insurance" class="{% if filters.insurance %}ins-active{% endif %}">
-          <option value="">All</option>
-          <option value="1" {% if filters.insurance == '1' %}selected{% endif %}>✓ Insured</option>
-          <option value="0" {% if filters.insurance == '0' %}selected{% endif %}>✗ No Insurance</option>
+          <option value="0" {% if filters.contacted=='0' %}selected{% endif %}>Fresh only</option>
+          <option value="1" {% if filters.contacted=='1' %}selected{% endif %}>Contacted</option>
         </select>
       </div>
       <button type="submit" class="btn btn-primary">Filter</button>
       <a href="/" class="btn btn-outline">Reset</a>
       <div class="filter-spacer"></div>
-      <a href="/export?search={{ filters.search }}&state={{ filters.state }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&insurance={{ filters.insurance }}" class="btn btn-green">
-        ⬇ Export CSV
-      </a>
+      <a href="/export?search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}" class="btn btn-green">⬇ Export CSV</a>
     </div>
   </form>
 
   <!-- Table -->
   <div class="table-wrap">
     <div class="table-header">
-      <div class="table-title">New Trucking Registrations</div>
-      <div class="table-count">{{ total_filtered }} leads found</div>
+      <div class="table-title">New Trucking Registrations — sorted by confidence + insurance priority</div>
+      <div class="table-count">{{ total_filtered }} leads</div>
     </div>
 
     {% if leads %}
@@ -217,68 +185,75 @@
           <th>DOT / MC</th>
           <th>Owner</th>
           <th>Phone</th>
+          <th>Email / Web</th>
           <th>Location</th>
           <th>Trucks</th>
           <th>Insurance</th>
           <th>Registered</th>
-          <th>Status</th>
+          <th>Contacted</th>
           <th>Notes</th>
         </tr>
       </thead>
       <tbody>
         {% for lead in leads %}
-        <tr>
+        <tr class="{% if lead.insurance_status in ('none','unknown') %}row-hot{% endif %}">
           <td>
             <div class="company-name">{{ lead.company_name or '—' }}</div>
-            {% if lead.entity_type %}
-            <div style="font-size:11px;color:#9ca3af;margin-top:2px;">{{ lead.entity_type }}</div>
+            {% if lead.phone_confidence %}
+            <span class="conf conf-{{ lead.phone_confidence }}">{{ lead.phone_confidence|upper }}</span>
             {% endif %}
           </td>
           <td>
             <div><span class="dot-badge">DOT {{ lead.dot_number }}</span></div>
-            {% if lead.mc_number %}
-            <div style="margin-top:3px;"><span class="mc-badge">MC {{ lead.mc_number }}</span></div>
-            {% endif %}
+            {% if lead.mc_number %}<div style="margin-top:3px"><span class="mc-badge">MC {{ lead.mc_number }}</span></div>{% endif %}
           </td>
-          <td>{{ lead.owner_name or '—' }}</td>
+          <td style="max-width:130px">{{ lead.owner_name or '—' }}</td>
           <td>
             {% if lead.phone %}
             <a href="tel:{{ lead.phone }}" class="phone-link">{{ lead.phone }}</a>
-            {% else %}—{% endif %}
+            <div style="font-size:10px;color:#9ca3af;margin-top:1px">{{ lead.phone_source or '' }}</div>
+            {% else %}<span style="color:#d1d5db">—</span>{% endif %}
+          </td>
+          <td style="max-width:140px">
+            {% if lead.email %}<div><a href="mailto:{{ lead.email }}" class="email-link">{{ lead.email }}</a></div>{% endif %}
+            {% if lead.website %}<div style="margin-top:2px"><a href="{{ lead.website }}" target="_blank" class="website-link">{{ lead.website|replace('https://','') }}</a></div>{% endif %}
+            {% if not lead.email and not lead.website %}<span style="color:#d1d5db">—</span>{% endif %}
           </td>
           <td>
             {{ lead.city or '' }}{% if lead.city and lead.state %}, {% endif %}
             {% if lead.state %}<span class="state-pill">{{ lead.state }}</span>{% endif %}
           </td>
-          <td style="text-align:center;">{{ lead.power_units or '—' }}</td>
+          <td style="text-align:center">{{ lead.power_units or '—' }}</td>
           <td>
-            {% if lead.has_insurance %}
-            <span class="ins-badge yes">✓ Insured</span>
+            {% if lead.insurance_status == 'none' %}
+              <span class="ins ins-none">🔥 No ins.</span>
+            {% elif lead.insurance_status == 'unknown' %}
+              <span class="ins ins-unknown">⚡ Unknown</span>
+            {% elif lead.insurance_status == 'partial' %}
+              <span class="ins ins-partial">⚠ Partial</span>
             {% else %}
-            <span class="ins-badge no">✗ None</span>
+              <span class="ins ins-insured">✓ Insured</span>
             {% endif %}
           </td>
-          <td><span class="date-text">{{ lead.registration_date.strftime('%Y-%m-%d') if lead.registration_date else '—' }}</span></td>
+          <td style="font-size:12px;color:#9ca3af;white-space:nowrap">
+            {{ lead.registration_date.strftime('%Y-%m-%d') if lead.registration_date else '—' }}
+          </td>
           <td>
-            <form method="post" action="/mark-contacted/{{ lead.id }}" style="display:inline;">
+            <form method="post" action="/mark-contacted/{{ lead.id }}" style="display:inline">
               {% if lead.contacted %}
               <input type="hidden" name="value" value="0"/>
-              <button type="submit" class="contact-btn done">✓ Contacted</button>
+              <button type="submit" class="contact-btn done">✓ Done</button>
               {% else %}
               <input type="hidden" name="value" value="1"/>
-              <button type="submit" class="contact-btn fresh">Mark contacted</button>
+              <button type="submit" class="contact-btn fresh">Call</button>
               {% endif %}
             </form>
           </td>
           <td>
-            <input
-              class="note-input"
-              type="text"
-              placeholder="Add note..."
+            <input class="note-input" type="text" placeholder="Note..."
               value="{{ lead.notes or '' }}"
-              onblur="saveNote({{ lead.id }}, this.value)"
-              onkeydown="if(event.key==='Enter'){this.blur()}"
-            />
+              onblur="saveNote({{ lead.id }},this.value)"
+              onkeydown="if(event.key==='Enter')this.blur()"/>
           </td>
         </tr>
         {% endfor %}
@@ -287,35 +262,25 @@
 
     {% if total_pages > 1 %}
     <div class="pagination">
-      <a href="?page={{ page-1 }}&search={{ filters.search }}&state={{ filters.state }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&contacted={{ filters.contacted }}&insurance={{ filters.insurance }}"
-         class="page-btn {% if page <= 1 %}disabled{% endif %}">‹</a>
-      {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
-      <a href="?page={{ p }}&search={{ filters.search }}&state={{ filters.state }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&contacted={{ filters.contacted }}&insurance={{ filters.insurance }}"
-         class="page-btn {% if p == page %}active{% endif %}">{{ p }}</a>
+      <a href="?page={{ page-1 }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&contacted={{ filters.contacted }}"
+         class="page-btn {% if page<=1 %}disabled{% endif %}">‹</a>
+      {% for p in range([1,page-2]|max,[total_pages+1,page+3]|min) %}
+      <a href="?page={{ p }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&contacted={{ filters.contacted }}"
+         class="page-btn {% if p==page %}active{% endif %}">{{ p }}</a>
       {% endfor %}
-      <a href="?page={{ page+1 }}&search={{ filters.search }}&state={{ filters.state }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&contacted={{ filters.contacted }}&insurance={{ filters.insurance }}"
-         class="page-btn {% if page >= total_pages %}disabled{% endif %}">›</a>
+      <a href="?page={{ page+1 }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&contacted={{ filters.contacted }}"
+         class="page-btn {% if page>=total_pages %}disabled{% endif %}">›</a>
       <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
     </div>
     {% endif %}
 
     {% else %}
-    <div class="empty">
-      <div class="empty-icon">🔍</div>
-      <p>No leads found</p>
-      <small>Try adjusting your filters or wait for the next scraper run.</small>
-    </div>
+    <div class="empty"><div style="font-size:40px;margin-bottom:12px">🔍</div><p>No leads found</p><small>Adjust filters or wait for next scraper run.</small></div>
     {% endif %}
-
   </div>
 </div>
-
 <script>
-function saveNote(id, note) {
-  const fd = new FormData();
-  fd.append('note', note);
-  fetch('/save-note/' + id, { method: 'POST', body: fd });
-}
+function saveNote(id,note){const fd=new FormData();fd.append('note',note);fetch('/save-note/'+id,{method:'POST',body:fd})}
 </script>
 </body>
 </html>
