@@ -17,7 +17,9 @@ log = logging.getLogger(__name__)
 
 def job():
     try:
-        count = run_scraper()
+        result = run_scraper()
+        # Safety: run_scraper() should return an int but guard against list/None
+        count = result if isinstance(result, int) else (len(result) if isinstance(result, list) else 0)
         log.info("Scheduled run complete. New leads: %d", count)
     except Exception as e:
         log.error("Scraper job failed: %s", e)
