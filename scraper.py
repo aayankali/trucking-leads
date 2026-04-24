@@ -112,6 +112,61 @@ def layer_dot_report(lead):
     return lead
 
 # ── MAIN ─────────────────────────────────────────
+def fetch_new_registrations():
+    cutoff = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%dT%H:%M:%S")
+    log.info("Fetching registrations since %s...", cutoff[:10])
+
+    leads = []
+    offset = 0
+
+    while True:
+        params = {
+            "$where":  f"(add_date > '{cutoff}' OR mcs150_date > '{cutoff}')",
+            "$limit":  PAGE_SIZE,
+            "$offset": offset,
+            "$order":  "add_date DESC",
+        }
+
+        try:
+            r = requests.get(SODA_URL, params=params, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            log.error("Socrata fetch error: %s", e)
+            break
+
+        if not data:
+            break
+
+        for row in data:
+            dot = str(row.get("dot_number") or "").strip()
+            if not dot:
+                continue
+
+            leads.append({
+                "dot_number": dot,
+                "company_name": row.get("legal_name") or "",
+                "phone": "",
+                "phone_source": "",
+                "phone_confidence": "none",
+                "sources_found": 0,
+                "state": row.get("phy_state") or "",
+                "has_insurance": False,
+                "insurance_status": "unknown",
+                "registration_date": row.get("add_date", "")[:10],
+            })
+
+        log.info("%d leads fetched so far...", len(leads))
+
+        if len(data) < PAGE_SIZE:
+            break
+
+        offset += PAGE_SIZE
+
+    log.info("Fetched %d base leads from Socrata.", len(leads))
+    return leads
+
+
 
 def run_scraper():
     log.info("Starting scraper...")
