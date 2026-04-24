@@ -3,3 +3,5 @@ requests==2.32.3
 schedule==1.2.2
 gunicorn==22.0.0
 psycopg2-binary==2.9.9
+beautifulsoup4==4.12.3
+lxml==5.2.2
