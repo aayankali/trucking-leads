@@ -3,6 +3,7 @@
 # (imports stay same)
 import os, re, logging, time, random
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 import requests
 import psycopg2, psycopg2.extras
@@ -54,8 +55,37 @@ LEAD_DEFAULTS = {
     "insurance_status": "unknown",
     "phone_source": "",
     "phone_confidence": "none",
+    "phone_sources": "",
+    "email_source": "",
+    "website_source": "",
     "sources_found": 0,
     "enriched": False,
+    "is_trucking": False,
+    "lead_status": "new",
+    "skip_reason": "",
+    "enrichment_errors": "",
+    "last_enriched_at": None,
+}
+
+TRUCKING_WORDS = [
+    "trucking", "truck", "transport", "transportation", "freight", "logistics",
+    "carrier", "hauling", "haulage", "cartage", "express", "delivery",
+    "dispatch", "cargo", "moving", "movers", "hotshot", "hot shot",
+    "linehaul", "drayage", "distribution", "courier", "ltl", "fleet",
+]
+BAD_WORDS = [
+    "school", "church", "real estate", "builder", "landscaping", "lawn care",
+    "restaurant", "cleaning", "plumbing", "roofing", "hvac",
+]
+GENERIC_EMAIL_DOMAINS = {
+    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "aol.com",
+    "icloud.com", "live.com", "msn.com", "proton.me", "protonmail.com",
+}
+PHONE_SOURCE_PRIORITY = {
+    "fmcsa_api": 4,
+    "socrata": 3,
+    "fmcsa_safer": 3,
+    "dot_report": 2,
 }
 
 def extract_phones(text):
@@ -91,6 +121,18 @@ def first_present(*values):
             return str(value).strip()
     return ""
 
+def add_unique_csv(lead, field, value):
+    value = str(value or "").strip()
+    if not value:
+        return
+    existing = [x.strip() for x in str(lead.get(field) or "").split(",") if x.strip()]
+    if value not in existing:
+        existing.append(value)
+        lead[field] = ", ".join(existing)
+
+def add_error(lead, value):
+    add_unique_csv(lead, "enrichment_errors", value)
+
 def normalize_date(value):
     if not value:
         return None
@@ -107,6 +149,7 @@ def apply_phone(lead, raw_phone, source, confidence="medium"):
     phone = phones[0]
     current = lead.get("phone") or ""
     sources_found = parse_int(lead.get("sources_found"))
+    add_unique_csv(lead, "phone_sources", f"{source}:{phone}")
 
     if not current:
         lead["phone"] = phone
@@ -120,32 +163,103 @@ def apply_phone(lead, raw_phone, source, confidence="medium"):
         lead["phone_confidence"] = "high"
         return True
 
+    old_priority = PHONE_SOURCE_PRIORITY.get(lead.get("phone_source"), 0)
+    new_priority = PHONE_SOURCE_PRIORITY.get(source, 0)
+    if new_priority > old_priority:
+        lead["phone"] = phone
+        lead["phone_source"] = source
+        lead["phone_confidence"] = confidence
+        lead["sources_found"] = max(1, sources_found)
+
+    add_error(lead, f"phone_conflict_{source}")
     return False
 
-def safe_get(url, timeout=12):
-    try:
-        return requests.get(url, headers=HEADERS, timeout=timeout)
-    except Exception:
-        return None
+def apply_email(lead, raw_email, source):
+    emails = extract_emails(raw_email or "")
+    if not emails:
+        return False
+    if not lead.get("email"):
+        lead["email"] = emails[0]
+        lead["email_source"] = source
+    return True
+
+def normalize_website(url):
+    url = str(url or "").strip()
+    if not url or "@" in url:
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    if not re.match(r"^https?://", url, re.I):
+        url = "https://" + url
+    parsed = urlparse(url)
+    if "." not in (parsed.netloc or ""):
+        return ""
+    return url.split("#", 1)[0].rstrip("/")
+
+def apply_website(lead, raw_url, source):
+    website = normalize_website(raw_url)
+    if not website:
+        return False
+    host = urlparse(website).netloc.lower()
+    blocked = ("fmcsa.dot.gov", "safer.fmcsa.dot.gov", "dot.report", "transportation.gov")
+    if any(blocked_host in host for blocked_host in blocked):
+        return False
+    if not lead.get("website"):
+        lead["website"] = website
+        lead["website_source"] = source
+    return True
+
+def apply_website_from_email(lead):
+    if lead.get("website") or not lead.get("email"):
+        return False
+    domain = lead["email"].split("@")[-1].lower()
+    if domain in GENERIC_EMAIL_DOMAINS:
+        return False
+    return apply_website(lead, domain, "email_domain")
+
+def safe_get(url, timeout=12, params=None, retries=2, source="http"):
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            if r.status_code < 400:
+                return r
+            if r.status_code not in (429, 500, 502, 503, 504):
+                log.debug("%s returned HTTP %s for %s", source, r.status_code, url)
+                return r
+            log.debug("%s retryable HTTP %s for %s", source, r.status_code, url)
+        except Exception as e:
+            log.debug("%s request failed for %s: %s", source, url, e)
+        if attempt < retries:
+            time.sleep(0.75 * (attempt + 1))
+    return None
 
 # ── 🔥 NEW FILTER ─────────────────────────────────
 
 def is_good_lead(lead):
+    return classify_trucking_lead(lead)[0]
+
+def classify_trucking_lead(lead):
     name = (lead.get("company_name") or "").lower()
     state = (lead.get("state") or "").upper()
+    operation = (lead.get("operation_type") or "").lower()
+    cargo = (lead.get("cargo_type") or "").lower()
+    entity = (lead.get("entity_type") or "").lower()
+    text = " ".join([name, operation, cargo, entity])
 
     if len(state) != 2:
-        return False
+        return False, "invalid_state"
 
-    bad_words = ["school", "construction", "real estate", "builder", "church"]
-    if any(b in name for b in bad_words):
-        return False
+    has_trucking_word = any(w in text for w in TRUCKING_WORDS)
+    has_units = parse_int(lead.get("power_units")) > 0 or parse_int(lead.get("drivers")) > 0
+    carrier_entity = any(w in text for w in ["carrier", "interstate", "intrastate", "motor carrier"])
 
-    trucking_words = ["trucking", "transport", "freight", "logistics", "carrier"]
-    if not any(w in name for w in trucking_words):
-        return False
+    if any(b in name for b in BAD_WORDS) and not (has_trucking_word or carrier_entity):
+        return False, "non_trucking_business_name"
 
-    return True
+    if has_trucking_word or has_units or carrier_entity:
+        return True, ""
+
+    return False, "weak_trucking_match"
 
 # ── LAYER: DOT REPORT (FIXED) ─────────────────────
 
@@ -181,8 +295,12 @@ def layer_dot_report(lead):
 
     text = soup.get_text(" ")
     emails = extract_emails(text)
-    if emails and not lead.get("email"):
-        lead["email"] = emails[0]
+    if emails:
+        apply_email(lead, emails[0], "dot_report")
+
+    for a in soup.find_all("a", href=True):
+        if apply_website(lead, a["href"], "dot_report"):
+            break
 
     return lead
 
@@ -203,7 +321,9 @@ def fetch_new_registrations():
         }
 
         try:
-            r = requests.get(SODA_URL, params=params, timeout=30)
+            r = safe_get(SODA_URL, params=params, timeout=30, retries=2, source="socrata")
+            if r is None:
+                raise RuntimeError("empty response")
             r.raise_for_status()
             data = r.json()
         except Exception as e:
@@ -224,7 +344,7 @@ def fetch_new_registrations():
                 "company_name": first_present(row.get("legal_name"), row.get("dba_name")),
                 "owner_name": "",
                 "phone": "",
-                "email": first_present(row.get("email_address"), row.get("email")),
+                "email": "",
                 "website": "",
                 "address": first_present(row.get("phy_street"), row.get("physical_address")),
                 "city": first_present(row.get("phy_city"), row.get("physical_city")),
@@ -251,6 +371,8 @@ def fetch_new_registrations():
                 row.get("mailing_telephone"),
                 row.get("phone"),
             ), "socrata", "medium")
+            apply_email(lead, first_present(row.get("email_address"), row.get("email")), "socrata")
+            apply_website(lead, first_present(row.get("website"), row.get("url")), "socrata")
 
             leads.append(lead)
 
@@ -272,9 +394,9 @@ def layer_fmcsa(lead):
     url = f"{FMCSA_BASE}/{lead['dot_number']}"
 
     try:
-        r = requests.get(url, params={"webKey": FMCSA_API_KEY}, timeout=10)
+        r = safe_get(url, params={"webKey": FMCSA_API_KEY}, timeout=10, retries=2, source="fmcsa_api")
 
-        if r.status_code != 200:
+        if not r or r.status_code != 200:
             return lead
 
         content = r.json().get("content", {})
@@ -296,7 +418,8 @@ def layer_fmcsa(lead):
         lead["drivers"] = parse_int(first_present(lead.get("drivers"), data.get("driverTotal")))
         lead["power_units"] = parse_int(first_present(lead.get("power_units"), data.get("nbrPowerUnit"), data.get("powerUnits")))
         lead["status"] = first_present(lead.get("status"), data.get("commonAuthorityStatus"), data.get("statusCode")) or "A"
-        lead["email"] = first_present(lead.get("email"), data.get("emailAddress"))
+        apply_email(lead, data.get("emailAddress"), "fmcsa_api")
+        apply_website(lead, first_present(data.get("website"), data.get("url"), data.get("webUrl")), "fmcsa_api")
         lead["mc_number"] = first_present(lead.get("mc_number"), data.get("docketNumber"), data.get("mcNumber"))
 
         phone_raw = first_present(
@@ -360,7 +483,7 @@ def layer_aggregator(lead):
         return lead
 
     try:
-        r = requests.get(
+        r = safe_get(
             "https://safer.fmcsa.dot.gov/query.asp",
             params={
                 "searchtype": "ANY",
@@ -368,10 +491,11 @@ def layer_aggregator(lead):
                 "query_param": "USDOT",
                 "query_string": dot,
             },
-            headers=HEADERS,
             timeout=12,
+            retries=2,
+            source="fmcsa_safer",
         )
-        if r.status_code != 200:
+        if not r or r.status_code != 200:
             return lead
     except Exception as e:
         log.debug("SAFER error %s: %s", dot, e)
@@ -402,10 +526,16 @@ def layer_aggregator(lead):
         lead["entity_type"] = entity_type
 
     emails = extract_emails(soup.get_text(" "))
-    if emails and not lead.get("email"):
-        lead["email"] = emails[0]
+    if emails:
+        apply_email(lead, emails[0], "fmcsa_safer")
 
     time.sleep(0.2)
+    return lead
+
+
+def layer_contact_inference(lead):
+    """Final lightweight enrichment from data already discovered by trusted sources."""
+    apply_website_from_email(lead)
     return lead
 
 
@@ -437,11 +567,24 @@ def finalize(lead):
     clean["sources_found"] = parse_int(clean.get("sources_found"))
     clean["registration_date"] = normalize_date(clean.get("registration_date"))
     clean["has_insurance"] = parse_bool(clean.get("has_insurance"))
+    clean["phone_sources"] = str(clean.get("phone_sources") or "").strip()
+    clean["email_source"] = str(clean.get("email_source") or "").strip()
+    clean["website_source"] = str(clean.get("website_source") or "").strip()
+    clean["enrichment_errors"] = str(clean.get("enrichment_errors") or "").strip()
 
     if clean["insurance_status"] not in ("none", "unknown", "partial", "insured"):
         clean["insurance_status"] = "unknown"
 
+    apply_website_from_email(clean)
+
     if clean["phone"]:
+        phone_source_names = {
+            entry.split(":", 1)[0]
+            for entry in clean["phone_sources"].split(",")
+            if entry.strip().endswith(clean["phone"])
+        }
+        if phone_source_names:
+            clean["sources_found"] = max(clean["sources_found"], len(phone_source_names))
         if clean["sources_found"] >= 2:
             clean["phone_confidence"] = "high"
         elif clean["phone_confidence"] not in ("medium", "high"):
@@ -450,6 +593,21 @@ def finalize(lead):
         clean["phone_source"] = ""
         clean["phone_confidence"] = "none"
         clean["sources_found"] = 0
+
+    is_trucking, reason = classify_trucking_lead(clean)
+    clean["is_trucking"] = is_trucking
+    if not is_trucking:
+        clean["lead_status"] = "not_trucking"
+        clean["skip_reason"] = reason
+    elif not clean["phone"]:
+        clean["lead_status"] = "needs_phone"
+        clean["skip_reason"] = "no_phone_found"
+    elif clean["has_insurance"] or clean["insurance_status"] == "insured":
+        clean["lead_status"] = "insured"
+        clean["skip_reason"] = "already_insured"
+    else:
+        clean["lead_status"] = "call_ready"
+        clean["skip_reason"] = ""
 
     clean["enriched"] = True
     return clean
@@ -487,7 +645,15 @@ def ensure_db():
                 registration_date DATE,
                 contacted BOOLEAN DEFAULT FALSE,
                 notes TEXT DEFAULT '',
-                has_insurance BOOLEAN DEFAULT FALSE
+                has_insurance BOOLEAN DEFAULT FALSE,
+                lead_status TEXT DEFAULT 'new',
+                skip_reason TEXT DEFAULT '',
+                is_trucking BOOLEAN DEFAULT FALSE,
+                phone_sources TEXT DEFAULT '',
+                email_source TEXT DEFAULT '',
+                website_source TEXT DEFAULT '',
+                enrichment_errors TEXT DEFAULT '',
+                last_enriched_at TIMESTAMP
             )
         """)
     conn.commit()
@@ -512,6 +678,14 @@ def ensure_db():
         ("power_units", "INTEGER", "0"),
         ("status", "TEXT", "'A'"),
         ("has_insurance", "BOOLEAN", "FALSE"),
+        ("lead_status", "TEXT", "'new'"),
+        ("skip_reason", "TEXT", "''"),
+        ("is_trucking", "BOOLEAN", "FALSE"),
+        ("phone_sources", "TEXT", "''"),
+        ("email_source", "TEXT", "''"),
+        ("website_source", "TEXT", "''"),
+        ("enrichment_errors", "TEXT", "''"),
+        ("last_enriched_at", "TIMESTAMP", "NULL"),
     ]
     for col, col_type, default in columns:
         try:
@@ -535,7 +709,8 @@ def batch_insert(leads):
         "entity_type", "operation_type", "cargo_type", "drivers", "power_units",
         "status", "registration_date", "added_date", "has_insurance",
         "insurance_status", "phone_source", "phone_confidence", "sources_found",
-        "enriched",
+        "enriched", "is_trucking", "lead_status", "skip_reason", "phone_sources",
+        "email_source", "website_source", "enrichment_errors", "last_enriched_at",
     ]
 
     now = datetime.utcnow()
@@ -544,7 +719,7 @@ def batch_insert(leads):
         lead = finalize(lead)
         row = []
         for col in columns:
-            row.append(now if col == "added_date" else lead.get(col))
+            row.append(now if col in ("added_date", "last_enriched_at") else lead.get(col))
         rows.append(tuple(row))
 
     sql = f"""
@@ -573,7 +748,15 @@ def batch_insert(leads):
             phone_source = COALESCE(NULLIF(EXCLUDED.phone_source, ''), leads.phone_source),
             phone_confidence = EXCLUDED.phone_confidence,
             sources_found = GREATEST(EXCLUDED.sources_found, leads.sources_found),
-            enriched = EXCLUDED.enriched
+            enriched = EXCLUDED.enriched,
+            is_trucking = EXCLUDED.is_trucking,
+            lead_status = EXCLUDED.lead_status,
+            skip_reason = EXCLUDED.skip_reason,
+            phone_sources = COALESCE(NULLIF(EXCLUDED.phone_sources, ''), leads.phone_sources),
+            email_source = COALESCE(NULLIF(EXCLUDED.email_source, ''), leads.email_source),
+            website_source = COALESCE(NULLIF(EXCLUDED.website_source, ''), leads.website_source),
+            enrichment_errors = COALESCE(NULLIF(EXCLUDED.enrichment_errors, ''), leads.enrichment_errors),
+            last_enriched_at = EXCLUDED.last_enriched_at
         RETURNING id
     """
 
@@ -602,17 +785,15 @@ def run_scraper():
         log.warning("No leads fetched")
         return 0
 
-    # 🔥 FILTER BEFORE
-    leads = [l for l in leads if is_good_lead(l)]
-    log.info("After trucking filter: %d leads", len(leads))
-
+    # Keep pipeline visibility instead of dropping leads before saving.
     leads.sort(key=lambda x: str(x.get("registration_date") or ""), reverse=True)
     leads = leads[:ENRICH_LIMIT]
+    log.info("Enriching newest %d leads; all processed leads will be saved with pipeline status.", len(leads))
 
     batch = []
     inserted = 0
 
-    stats = {"kept": 0, "skip_no_phone": 0, "skip_ins": 0}
+    stats = {"call_ready": 0, "needs_phone": 0, "insured": 0, "not_trucking": 0}
 
     for i, lead in enumerate(leads):
         log.info("[%d/%d] DOT %s", i+1, len(leads), lead["dot_number"])
@@ -620,18 +801,11 @@ def run_scraper():
         lead = layer_fmcsa(lead)
         lead = layer_dot_report(lead)
         lead = layer_aggregator(lead)
+        lead = layer_contact_inference(lead)
         lead = finalize(lead)
 
-        # 🔥 HARD FILTER
-        if not lead.get("phone"):
-            stats["skip_no_phone"] += 1
-            continue
-
-        if lead.get("has_insurance") or lead.get("insurance_status") == "insured":
-            stats["skip_ins"] += 1
-            continue
-
-        stats["kept"] += 1
+        status = lead.get("lead_status") or "new"
+        stats[status] = stats.get(status, 0) + 1
 
         batch.append(lead)
 
@@ -643,7 +817,8 @@ def run_scraper():
         inserted += batch_insert(batch)
 
     log.info("Saved: %d", inserted)
-    log.info("Kept: %d | Skip no phone: %d | Skip insurance: %d",
-             stats["kept"], stats["skip_no_phone"], stats["skip_ins"])
+    log.info("Call ready: %d | Need phone: %d | Insured: %d | Not trucking: %d",
+             stats.get("call_ready", 0), stats.get("needs_phone", 0),
+             stats.get("insured", 0), stats.get("not_trucking", 0))
 
     return inserted
