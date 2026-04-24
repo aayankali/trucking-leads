@@ -31,37 +31,44 @@ def execute(sql, params=()):
 
 def init_db():
     conn = get_db()
+    # Create base table if not exists
     with conn.cursor() as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS leads (
                 id SERIAL PRIMARY KEY, dot_number TEXT UNIQUE,
                 mc_number TEXT, company_name TEXT, owner_name TEXT,
-                phone TEXT, email TEXT, website TEXT,
+                phone TEXT DEFAULT '', email TEXT DEFAULT '',
                 address TEXT, city TEXT, state TEXT, zip_code TEXT,
                 entity_type TEXT, operation_type TEXT, cargo_type TEXT,
-                drivers INTEGER, power_units INTEGER, status TEXT,
+                drivers INTEGER DEFAULT 0, power_units INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'A',
                 added_date TIMESTAMP, registration_date DATE,
                 contacted BOOLEAN DEFAULT FALSE, notes TEXT DEFAULT '',
-                has_insurance BOOLEAN DEFAULT FALSE,
-                insurance_status TEXT DEFAULT 'unknown',
-                phone_source TEXT DEFAULT '',
-                phone_confidence TEXT DEFAULT 'none',
-                sources_found INTEGER DEFAULT 0,
-                enriched BOOLEAN DEFAULT FALSE
+                has_insurance BOOLEAN DEFAULT FALSE
             )
         """)
-        for col, defn in [
-            ("website","TEXT DEFAULT ''"),("phone_source","TEXT DEFAULT ''"),
-            ("phone_confidence","TEXT DEFAULT 'none'"),("sources_found","INTEGER DEFAULT 0"),
-            ("enriched","BOOLEAN DEFAULT FALSE"),("insurance_status","TEXT DEFAULT 'unknown'"),
-            ("email","TEXT DEFAULT ''"),
-        ]:
-            try:
-                c.execute(f"ALTER TABLE leads ADD COLUMN {col} {defn}")
-            except Exception:
-                pass
     conn.commit()
+
+    # Migrate: add each new column in its own transaction
+    new_columns = [
+        ("insurance_status",  "TEXT",    "'unknown'"),
+        ("phone_source",      "TEXT",    "''"),
+        ("phone_confidence",  "TEXT",    "'none'"),
+        ("sources_found",     "INTEGER", "0"),
+        ("enriched",          "BOOLEAN", "FALSE"),
+        ("website",           "TEXT",    "''"),
+    ]
+    for col, col_type, default in new_columns:
+        try:
+            with conn.cursor() as c:
+                c.execute(f"ALTER TABLE leads ADD COLUMN {col} {col_type} DEFAULT {default}")
+            conn.commit()
+        except psycopg2.errors.DuplicateColumn:
+            conn.rollback()
+        except Exception as e:
+            conn.rollback()
     conn.close()
+
 
 with app.app_context():
     init_db()
