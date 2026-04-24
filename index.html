@@ -12,7 +12,7 @@
     .nav-sub{font-size:12px;color:#8b8fa8}
     .badge-live{background:#22c55e;color:#fff;font-size:11px;font-weight:600;padding:3px 8px;border-radius:20px}
     .container{max-width:1500px;margin:0 auto;padding:24px 20px}
-    .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px}
+    .stats{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:20px}
     .stat-card{background:#fff;border-radius:10px;padding:16px 18px;border:1px solid #e5e7eb}
     .stat-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
     .stat-value{font-size:26px;font-weight:700;color:#1a1a2e}
@@ -60,6 +60,13 @@
     .ins-unknown{background:#fff7ed;color:#c2410c;border:1px solid #fed7aa}
     .ins-partial{background:#fefce8;color:#a16207;border:1px solid #fde047}
     .ins-insured{background:#f0fdf4;color:#15803d;border:1px solid #86efac}
+    .pipe{font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;white-space:nowrap;display:inline-block;margin-top:4px}
+    .pipe-call_ready{background:#dcfce7;color:#15803d}
+    .pipe-needs_phone{background:#fef9c3;color:#a16207}
+    .pipe-insured{background:#e0f2fe;color:#0369a1}
+    .pipe-not_trucking{background:#f3f4f6;color:#6b7280}
+    .pipe-new{background:#f3f4f6;color:#6b7280}
+    .reason{font-size:10px;color:#9ca3af;margin-top:2px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
     .contact-btn{font-size:11px;padding:4px 9px;border-radius:4px;cursor:pointer;border:1px solid;font-weight:500}
     .contact-btn.fresh{background:#fff;border-color:#d1d5db;color:#374151}
@@ -94,10 +101,11 @@
   <!-- Stats -->
   <div class="stats">
     <div class="stat-card"><div class="stat-label">Total Leads</div><div class="stat-value blue">{{ stats.total }}</div></div>
-    <div class="stat-card"><div class="stat-label">Added Today</div><div class="stat-value green">{{ stats.today }}</div></div>
+    <div class="stat-card"><div class="stat-label">Updated Today</div><div class="stat-value green">{{ stats.today }}</div></div>
+    <div class="stat-card"><div class="stat-label">Call Ready</div><div class="stat-value red">{{ stats.call_ready }}</div></div>
+    <div class="stat-card"><div class="stat-label">Needs Phone</div><div class="stat-value amber">{{ stats.needs_phone }}</div></div>
+    <div class="stat-card"><div class="stat-label">Insured</div><div class="stat-value blue">{{ stats.insured }}</div></div>
     <div class="stat-card"><div class="stat-label">With Phone</div><div class="stat-value purple">{{ stats.with_phone }}</div></div>
-    <div class="stat-card"><div class="stat-label">High Confidence</div><div class="stat-value green">{{ stats.high_conf }}</div></div>
-    <div class="stat-card"><div class="stat-label">Need Insurance 🔥</div><div class="stat-value red">{{ stats.no_insurance }}</div></div>
     <div class="stat-card"><div class="stat-label">Contacted</div><div class="stat-value amber">{{ stats.contacted }}</div></div>
   </div>
 
@@ -112,8 +120,12 @@
     <span><span class="ins ins-none">🔥 No insurance</span> Call first</span>
     <span><span class="ins ins-unknown">⚡ Unknown</span> Brand new</span>
     <span><span class="ins ins-insured">✓ Insured</span> Covered</span>
+    &nbsp;|&nbsp;
+    <span><strong>Pipeline:</strong></span>
+    <span><span class="pipe pipe-call_ready">CALL READY</span></span>
+    <span><span class="pipe pipe-needs_phone">NEEDS PHONE</span></span>
+    <span><span class="pipe pipe-not_trucking">NOT TRUCKING</span></span>
   </div>
-
   <!-- Filters -->
   <form method="get" action="/">
     <div class="filters">
@@ -148,6 +160,16 @@
         </select>
       </div>
       <div class="filter-group">
+        <label>Pipeline</label>
+        <select name="lead_status">
+          <option value="">All</option>
+          <option value="call_ready"   {% if filters.lead_status=='call_ready'   %}selected{% endif %}>Call ready</option>
+          <option value="needs_phone"  {% if filters.lead_status=='needs_phone'  %}selected{% endif %}>Needs phone</option>
+          <option value="insured"      {% if filters.lead_status=='insured'      %}selected{% endif %}>Insured</option>
+          <option value="not_trucking" {% if filters.lead_status=='not_trucking' %}selected{% endif %}>Not trucking</option>
+        </select>
+      </div>
+      <div class="filter-group">
         <label>From</label>
         <input type="date" name="date_from" value="{{ filters.date_from }}"/>
       </div>
@@ -166,14 +188,14 @@
       <button type="submit" class="btn btn-primary">Filter</button>
       <a href="/" class="btn btn-outline">Reset</a>
       <div class="filter-spacer"></div>
-      <a href="/export?search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}" class="btn btn-green">⬇ Export CSV</a>
+      <a href="/export?search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&lead_status={{ filters.lead_status }}" class="btn btn-green">⬇ Export CSV</a>
     </div>
   </form>
 
   <!-- Table -->
   <div class="table-wrap">
     <div class="table-header">
-      <div class="table-title">New Trucking Registrations — sorted by confidence + insurance priority</div>
+      <div class="table-title">New Trucking Registrations — newest first</div>
       <div class="table-count">{{ total_filtered }} leads</div>
     </div>
 
@@ -182,6 +204,7 @@
       <thead>
         <tr>
           <th>Company</th>
+          <th>Pipeline</th>
           <th>DOT / MC</th>
           <th>Owner</th>
           <th>Phone</th>
@@ -204,6 +227,10 @@
             {% endif %}
           </td>
           <td>
+            <span class="pipe pipe-{{ lead.lead_status or 'new' }}">{{ (lead.lead_status or 'new')|replace('_',' ')|upper }}</span>
+            {% if lead.skip_reason %}<div class="reason" title="{{ lead.skip_reason }}">{{ lead.skip_reason|replace('_',' ') }}</div>{% endif %}
+          </td>
+          <td>
             <div><span class="dot-badge">DOT {{ lead.dot_number }}</span></div>
             {% if lead.mc_number %}<div style="margin-top:3px"><span class="mc-badge">MC {{ lead.mc_number }}</span></div>{% endif %}
           </td>
@@ -211,12 +238,12 @@
           <td>
             {% if lead.phone %}
             <a href="tel:{{ lead.phone }}" class="phone-link">{{ lead.phone }}</a>
-            <div style="font-size:10px;color:#9ca3af;margin-top:1px">{{ lead.phone_source or '' }}</div>
+            <div style="font-size:10px;color:#9ca3af;margin-top:1px" title="{{ lead.phone_sources or '' }}">{{ lead.phone_source or '' }}</div>
             {% else %}<span style="color:#d1d5db">—</span>{% endif %}
           </td>
           <td style="max-width:140px">
-            {% if lead.email %}<div><a href="mailto:{{ lead.email }}" class="email-link">{{ lead.email }}</a></div>{% endif %}
-            {% if lead.website %}<div style="margin-top:2px"><a href="{{ lead.website }}" target="_blank" class="website-link">{{ lead.website|replace('https://','') }}</a></div>{% endif %}
+            {% if lead.email %}<div title="{{ lead.email_source or '' }}"><a href="mailto:{{ lead.email }}" class="email-link">{{ lead.email }}</a></div>{% endif %}
+            {% if lead.website %}<div style="margin-top:2px" title="{{ lead.website_source or '' }}"><a href="{{ lead.website }}" target="_blank" class="website-link">{{ lead.website|replace('https://','') }}</a></div>{% endif %}
             {% if not lead.email and not lead.website %}<span style="color:#d1d5db">—</span>{% endif %}
           </td>
           <td>
@@ -262,13 +289,13 @@
 
     {% if total_pages > 1 %}
     <div class="pagination">
-      <a href="?page={{ page-1 }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&contacted={{ filters.contacted }}"
+      <a href="?page={{ page-1 }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&lead_status={{ filters.lead_status }}&contacted={{ filters.contacted }}"
          class="page-btn {% if page<=1 %}disabled{% endif %}">‹</a>
       {% for p in range([1,page-2]|max,[total_pages+1,page+3]|min) %}
-      <a href="?page={{ p }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&contacted={{ filters.contacted }}"
+      <a href="?page={{ p }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&lead_status={{ filters.lead_status }}&contacted={{ filters.contacted }}"
          class="page-btn {% if p==page %}active{% endif %}">{{ p }}</a>
       {% endfor %}
-      <a href="?page={{ page+1 }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&contacted={{ filters.contacted }}"
+      <a href="?page={{ page+1 }}&search={{ filters.search }}&state={{ filters.state }}&insurance={{ filters.insurance }}&confidence={{ filters.confidence }}&lead_status={{ filters.lead_status }}&contacted={{ filters.contacted }}"
          class="page-btn {% if page>=total_pages %}disabled{% endif %}">›</a>
       <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
     </div>
