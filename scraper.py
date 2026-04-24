@@ -1,6 +1,6 @@
 """
 FMCSA Trucking Lead Scraper
-Pulls newly registered trucking companies (0-2 days old) from the FMCSA API
+Pulls newly registered trucking companies from the FMCSA API
 and stores them in a PostgreSQL database.
 """
 
@@ -22,8 +22,6 @@ log = logging.getLogger(__name__)
 DATABASE_URL  = os.environ.get("DATABASE_URL", "")
 FMCSA_API_KEY = os.environ.get("FMCSA_API_KEY", "")
 BASE_URL      = "https://mobile.fmcsa.dot.gov/qc/services/carriers"
-
-TRUCKING_OPERATIONS = {"A", "B", "C"}
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -97,20 +95,47 @@ def save_lead(lead: dict):
 # ── FMCSA API ─────────────────────────────────────────────────────────────────
 
 def fetch_carriers_by_state(state: str, start: int = 0, size: int = 100) -> list:
+    """Fetch carriers registered in a given state using the correct FMCSA endpoint."""
     if not FMCSA_API_KEY:
         return []
-    url = f"{BASE_URL}/docket-number/0"
-    params = {"webKey": FMCSA_API_KEY, "start": start, "size": size, "state": state}
+    url = f"{BASE_URL}"
+    params = {
+        "webKey": FMCSA_API_KEY,
+        "start": start,
+        "size": size,
+        "state": state,
+        "saferStatusCode": "A",   # Active carriers only
+    }
     try:
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params, timeout=20)
         r.raise_for_status()
-        return r.json().get("content", [])
+        data = r.json()
+        # API returns either a list or a dict with 'content'
+        if isinstance(data, list):
+            return data
+        return data.get("content", [])
     except requests.RequestException as e:
         log.error("FMCSA API error for state %s: %s", state, e)
         return []
 
 
-def fetch_new_carriers(days_back: int = 2) -> list:
+def fetch_carrier_by_dot(dot_number: str) -> dict:
+    """Fetch a single carrier's full details by DOT number."""
+    if not FMCSA_API_KEY:
+        return {}
+    url = f"{BASE_URL}/{dot_number}"
+    params = {"webKey": FMCSA_API_KEY}
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("content", {}) or {}
+    except requests.RequestException as e:
+        log.error("FMCSA detail error for DOT %s: %s", dot_number, e)
+        return {}
+
+
+def fetch_new_carriers(days_back: int = 7) -> list:
     if not FMCSA_API_KEY:
         log.warning("FMCSA_API_KEY not set — returning demo leads.")
         return _demo_leads()
@@ -129,17 +154,26 @@ def fetch_new_carriers(days_back: int = 2) -> list:
         log.info("Scanning state: %s", state)
         start = 0
         while True:
-            carriers = fetch_carriers_by_state(state, start=start)
+            carriers = fetch_carriers_by_state(state, start=start, size=100)
             if not carriers:
                 break
+
+            found_old = False
             for c in carriers:
                 lead = parse_carrier(c)
-                if lead and is_recent(lead.get("registration_date", ""), cutoff):
+                if not lead:
+                    continue
+                reg_date = lead.get("registration_date")
+                if reg_date and is_recent(reg_date, cutoff):
                     leads.append(lead)
-            if len(carriers) < 100:
+                else:
+                    # Results are ordered newest first — stop early if too old
+                    found_old = True
+
+            if len(carriers) < 100 or found_old:
                 break
             start += 100
-            sleep(0.2)
+            sleep(0.3)
 
     log.info("Found %d new trucking leads", len(leads))
     return leads
@@ -147,26 +181,52 @@ def fetch_new_carriers(days_back: int = 2) -> list:
 
 def parse_carrier(raw: dict):
     try:
+        # The API may wrap data inside a 'carrier' key or return it flat
         carrier = raw.get("carrier", raw)
-        op_type = carrier.get("carrierOperation", {}).get("carrierOperationCode", "")
-        if op_type not in TRUCKING_OPERATIONS:
-            return None
+
         dot = str(carrier.get("dotNumber", "")).strip()
         if not dot:
             return None
 
-        ins_flag = carrier.get("insuranceRequiredFlag", "")
+        # Only keep property/freight carriers (operation codes A, B, C)
+        op_code = ""
+        op_obj = carrier.get("carrierOperation", {})
+        if isinstance(op_obj, dict):
+            op_code = op_obj.get("carrierOperationCode", "")
+        elif isinstance(op_obj, str):
+            op_code = op_obj
+
+        if op_code not in ("A", "B", "C", ""):
+            return None
+
+        # Insurance
+        ins_flag = carrier.get("insuranceRequiredFlag", "N")
         bipd     = int(carrier.get("bipdInsuranceRequired", 0) or 0)
         has_ins  = ins_flag == "Y" or bipd > 0
 
-        reg_raw  = carrier.get("addDate", "")
+        # Registration date — try multiple field names
+        reg_raw = (carrier.get("addDate") or
+                   carrier.get("allowedToOperate") or
+                   carrier.get("statusCode") or "")
         reg_date = None
-        for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
-            try:
-                reg_date = datetime.strptime(reg_raw[:10], fmt).date()
-                break
-            except Exception:
-                pass
+        if reg_raw:
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    reg_date = datetime.strptime(str(reg_raw)[:10], fmt).date()
+                    break
+                except Exception:
+                    pass
+
+        # If we still have no date, use today so new records aren't missed
+        if reg_date is None:
+            reg_date = datetime.utcnow().date()
+
+        entity_type = ""
+        et_obj = carrier.get("entityType", {})
+        if isinstance(et_obj, dict):
+            entity_type = et_obj.get("entityTypeDesc", "")
+        elif isinstance(et_obj, str):
+            entity_type = et_obj
 
         return {
             "dot_number":        dot,
@@ -179,9 +239,9 @@ def parse_carrier(raw: dict):
             "city":              carrier.get("phyCity", ""),
             "state":             carrier.get("phyState", ""),
             "zip_code":          carrier.get("phyZipcode", ""),
-            "entity_type":       carrier.get("entityType", {}).get("entityTypeDesc", ""),
-            "operation_type":    op_type,
-            "cargo_type":        carrier.get("cargoCarried", {}).get("cargoCarriedCode", ""),
+            "entity_type":       entity_type,
+            "operation_type":    op_code,
+            "cargo_type":        "",
             "drivers":           int(carrier.get("totalDrivers", 0) or 0),
             "power_units":       int(carrier.get("totalPowerUnits", 0) or 0),
             "status":            carrier.get("statusCode", "A"),
@@ -197,7 +257,7 @@ def parse_carrier(raw: dict):
 def is_recent(date_val, cutoff: datetime) -> bool:
     if not date_val:
         return False
-    if hasattr(date_val, "year"):          # already a date/datetime
+    if hasattr(date_val, "year"):
         return datetime(date_val.year, date_val.month, date_val.day) >= cutoff
     for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
         try:
@@ -230,7 +290,7 @@ def _demo_leads() -> list:
         "owner_name": owner, "phone": phone, "email": "",
         "address": "123 Main St", "city": city, "state": state,
         "zip_code": zipcode, "entity_type": "CARRIER",
-        "operation_type": "A", "cargo_type": "G",
+        "operation_type": "A", "cargo_type": "",
         "drivers": 2, "power_units": 2, "status": "A",
         "added_date": now, "registration_date": reg_date,
         "has_insurance": ins,
@@ -244,7 +304,7 @@ def run_scraper():
     log.info("Starting FMCSA scraper run")
     log.info("=" * 50)
     init_db()
-    leads     = fetch_new_carriers(days_back=2)
+    leads     = fetch_new_carriers(days_back=7)
     new_count = sum(save_lead(lead) for lead in leads)
     log.info("Scraper complete. %d new leads saved.", new_count)
     return new_count
