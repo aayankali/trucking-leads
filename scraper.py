@@ -1,16 +1,18 @@
 """
 FMCSA Trucking Lead Scraper
-Pulls newly registered trucking companies from the FMCSA API
-and stores them in a PostgreSQL database.
+Downloads the FMCSA Company Census bulk file (updated daily) and extracts
+newly registered trucking companies from the last 7 days.
 """
 
 import os
+import io
+import csv
 import logging
+import zipfile
 import psycopg2
 import psycopg2.extras
 import requests
 from datetime import datetime, timedelta
-from time import sleep
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +23,9 @@ log = logging.getLogger(__name__)
 
 DATABASE_URL  = os.environ.get("DATABASE_URL", "")
 FMCSA_API_KEY = os.environ.get("FMCSA_API_KEY", "")
-BASE_URL      = "https://mobile.fmcsa.dot.gov/qc/services/carriers"
+
+# FMCSA bulk census file — updated daily, no API key needed
+CENSUS_URL = "https://ai.fmcsa.dot.gov/SMS/files/FMCSA_CENSUS1.zip"
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -92,179 +96,107 @@ def save_lead(lead: dict):
         conn.close()
 
 
-# ── FMCSA API ─────────────────────────────────────────────────────────────────
+# ── FMCSA Bulk Download ───────────────────────────────────────────────────────
 
-def fetch_carriers_by_state(state: str, start: int = 0, size: int = 100) -> list:
-    """Fetch carriers registered in a given state using the correct FMCSA endpoint."""
-    if not FMCSA_API_KEY:
-        return []
-    url = f"{BASE_URL}"
-    params = {
-        "webKey": FMCSA_API_KEY,
-        "start": start,
-        "size": size,
-        "state": state,
-        "saferStatusCode": "A",   # Active carriers only
-    }
+def download_census_file() -> io.StringIO:
+    """Download and unzip the FMCSA census file, return as StringIO."""
+    log.info("Downloading FMCSA census file...")
     try:
-        r = requests.get(url, params=params, timeout=20)
+        r = requests.get(CENSUS_URL, timeout=120, stream=True)
         r.raise_for_status()
-        data = r.json()
-        # API returns either a list or a dict with 'content'
-        if isinstance(data, list):
-            return data
-        return data.get("content", [])
-    except requests.RequestException as e:
-        log.error("FMCSA API error for state %s: %s", state, e)
-        return []
+        zip_data = io.BytesIO(r.content)
+        with zipfile.ZipFile(zip_data) as z:
+            csv_name = [n for n in z.namelist() if n.endswith(".txt") or n.endswith(".csv")][0]
+            log.info("Found file in zip: %s", csv_name)
+            with z.open(csv_name) as f:
+                content = f.read().decode("latin-1")
+        return io.StringIO(content)
+    except Exception as e:
+        log.error("Failed to download census file: %s", e)
+        return None
 
 
-def fetch_carrier_by_dot(dot_number: str) -> dict:
-    """Fetch a single carrier's full details by DOT number."""
-    if not FMCSA_API_KEY:
-        return {}
-    url = f"{BASE_URL}/{dot_number}"
-    params = {"webKey": FMCSA_API_KEY}
+def parse_census_row(row: dict, cutoff: datetime) -> dict:
     try:
-        r = requests.get(url, params=params, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        return data.get("content", {}) or {}
-    except requests.RequestException as e:
-        log.error("FMCSA detail error for DOT %s: %s", dot_number, e)
-        return {}
-
-
-def fetch_new_carriers(days_back: int = 7) -> list:
-    if not FMCSA_API_KEY:
-        log.warning("FMCSA_API_KEY not set — returning demo leads.")
-        return _demo_leads()
-
-    cutoff = datetime.utcnow() - timedelta(days=days_back)
-    leads  = []
-    states = [
-        "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
-        "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
-        "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
-        "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
-        "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
-    ]
-
-    for state in states:
-        log.info("Scanning state: %s", state)
-        start = 0
-        while True:
-            carriers = fetch_carriers_by_state(state, start=start, size=100)
-            if not carriers:
+        reg_raw = row.get("ADD_DATE", "") or row.get("MCS150_DATE", "")
+        reg_date = None
+        for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"):
+            try:
+                reg_date = datetime.strptime(reg_raw.strip()[:10], fmt).date()
                 break
+            except Exception:
+                pass
 
-            found_old = False
-            for c in carriers:
-                lead = parse_carrier(c)
-                if not lead:
-                    continue
-                reg_date = lead.get("registration_date")
-                if reg_date and is_recent(reg_date, cutoff):
-                    leads.append(lead)
-                else:
-                    # Results are ordered newest first — stop early if too old
-                    found_old = True
+        if reg_date is None:
+            return None
 
-            if len(carriers) < 100 or found_old:
-                break
-            start += 100
-            sleep(0.3)
+        if datetime(reg_date.year, reg_date.month, reg_date.day) < cutoff:
+            return None
 
-    log.info("Found %d new trucking leads", len(leads))
-    return leads
-
-
-def parse_carrier(raw: dict):
-    try:
-        # The API may wrap data inside a 'carrier' key or return it flat
-        carrier = raw.get("carrier", raw)
-
-        dot = str(carrier.get("dotNumber", "")).strip()
+        dot = str(row.get("DOT_NUMBER", "")).strip()
         if not dot:
             return None
 
-        # Only keep property/freight carriers (operation codes A, B, C)
-        op_code = ""
-        op_obj = carrier.get("carrierOperation", {})
-        if isinstance(op_obj, dict):
-            op_code = op_obj.get("carrierOperationCode", "")
-        elif isinstance(op_obj, str):
-            op_code = op_obj
-
-        if op_code not in ("A", "B", "C", ""):
-            return None
-
-        # Insurance
-        ins_flag = carrier.get("insuranceRequiredFlag", "N")
-        bipd     = int(carrier.get("bipdInsuranceRequired", 0) or 0)
-        has_ins  = ins_flag == "Y" or bipd > 0
-
-        # Registration date — try multiple field names
-        reg_raw = (carrier.get("addDate") or
-                   carrier.get("allowedToOperate") or
-                   carrier.get("statusCode") or "")
-        reg_date = None
-        if reg_raw:
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
-                try:
-                    reg_date = datetime.strptime(str(reg_raw)[:10], fmt).date()
-                    break
-                except Exception:
-                    pass
-
-        # If we still have no date, use today so new records aren't missed
-        if reg_date is None:
-            reg_date = datetime.utcnow().date()
-
-        entity_type = ""
-        et_obj = carrier.get("entityType", {})
-        if isinstance(et_obj, dict):
-            entity_type = et_obj.get("entityTypeDesc", "")
-        elif isinstance(et_obj, str):
-            entity_type = et_obj
+        bipd = row.get("BIPD_INSURANCE_REQUIRED", "0") or "0"
+        try:
+            has_ins = int(bipd) > 0
+        except Exception:
+            has_ins = False
 
         return {
             "dot_number":        dot,
-            "mc_number":         str(carrier.get("mcNumber", "") or ""),
-            "company_name":      carrier.get("legalName") or carrier.get("dbaName") or "",
-            "owner_name":        carrier.get("principalName", ""),
-            "phone":             carrier.get("telephone", ""),
-            "email":             carrier.get("email", ""),
-            "address":           carrier.get("phyStreet", ""),
-            "city":              carrier.get("phyCity", ""),
-            "state":             carrier.get("phyState", ""),
-            "zip_code":          carrier.get("phyZipcode", ""),
-            "entity_type":       entity_type,
-            "operation_type":    op_code,
+            "mc_number":         str(row.get("MC_MX_FF_NUMBER", "") or ""),
+            "company_name":      row.get("LEGAL_NAME", "") or row.get("DBA_NAME", ""),
+            "owner_name":        row.get("PRINCIPAL_NAME", ""),
+            "phone":             row.get("TELEPHONE", ""),
+            "email":             row.get("EMAIL_ADDRESS", ""),
+            "address":           row.get("PHY_STREET", ""),
+            "city":              row.get("PHY_CITY", ""),
+            "state":             row.get("PHY_STATE", ""),
+            "zip_code":          row.get("PHY_ZIP", ""),
+            "entity_type":       row.get("ENTITY_TYPE_DESC", "").strip(),
+            "operation_type":    row.get("CARRIER_OPERATION", "").strip(),
             "cargo_type":        "",
-            "drivers":           int(carrier.get("totalDrivers", 0) or 0),
-            "power_units":       int(carrier.get("totalPowerUnits", 0) or 0),
-            "status":            carrier.get("statusCode", "A"),
+            "drivers":           _safe_int(row.get("TOTAL_DRIVERS", 0)),
+            "power_units":       _safe_int(row.get("TOTAL_POWER_UNITS", 0)),
+            "status":            "A",
             "added_date":        datetime.utcnow(),
             "registration_date": reg_date,
             "has_insurance":     has_ins,
         }
     except Exception as e:
-        log.error("Parse error: %s", e)
+        log.error("Row parse error: %s", e)
         return None
 
 
-def is_recent(date_val, cutoff: datetime) -> bool:
-    if not date_val:
-        return False
-    if hasattr(date_val, "year"):
-        return datetime(date_val.year, date_val.month, date_val.day) >= cutoff
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(str(date_val)[:10], fmt) >= cutoff
-        except ValueError:
-            pass
-    return False
+def _safe_int(val) -> int:
+    try:
+        return int(val or 0)
+    except Exception:
+        return 0
+
+
+def fetch_new_carriers(days_back: int = 7) -> list:
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+    log.info("Looking for carriers registered after %s", cutoff.strftime("%Y-%m-%d"))
+
+    csv_file = download_census_file()
+    if csv_file is None:
+        log.warning("Census download failed — returning demo leads.")
+        return _demo_leads()
+
+    reader = csv.DictReader(csv_file, delimiter="\t")
+    leads = []
+    total_rows = 0
+
+    for row in reader:
+        total_rows += 1
+        lead = parse_census_row(row, cutoff)
+        if lead:
+            leads.append(lead)
+
+    log.info("Scanned %d rows, found %d new leads", total_rows, len(leads))
+    return leads
 
 
 # ── Demo mode ─────────────────────────────────────────────────────────────────
@@ -273,18 +205,16 @@ def _demo_leads() -> list:
     today     = datetime.utcnow().date()
     yesterday = (datetime.utcnow() - timedelta(days=1)).date()
     now       = datetime.utcnow()
-
     sample = [
-        ("3421901","MC-1234567","LONE STAR FREIGHT LLC",       "John Martinez", "(512) 555-0171","TX","Austin",      "78701", today,     True),
-        ("3421902","MC-1234568","GREAT LAKES TRANSPORT INC",   "Sara Kowalski", "(312) 555-0182","IL","Chicago",     "60601", today,     True),
-        ("3421903","",          "SUNRISE HAULING LLC",         "David Chen",    "(404) 555-0193","GA","Atlanta",     "30301", today,     False),
-        ("3421904","MC-1234570","BLUE RIDGE CARRIERS LLC",     "Mike Thornton", "(828) 555-0104","NC","Asheville",   "28801", yesterday, True),
-        ("3421905","MC-1234571","PACIFIC COAST LOGISTICS INC", "Ana Gutierrez", "(503) 555-0115","OR","Portland",    "97201", yesterday, False),
-        ("3421906","",          "MOUNTAIN STATE TRUCKING LLC", "Bob Williams",  "(720) 555-0126","CO","Denver",      "80201", yesterday, False),
-        ("3421907","MC-1234573","BAYOU FREIGHT SOLUTIONS LLC", "Lisa Tran",     "(504) 555-0137","LA","New Orleans", "70112", yesterday, True),
-        ("3421908","MC-1234574","IRON HORSE TRANSPORT LLC",    "Tom Bradley",   "(602) 555-0148","AZ","Phoenix",     "85001", today,     False),
+        ("3421901","MC-1234567","LONE STAR FREIGHT LLC",       "John Martinez","(512) 555-0171","TX","Austin",      "78701",today,     True),
+        ("3421902","MC-1234568","GREAT LAKES TRANSPORT INC",   "Sara Kowalski","(312) 555-0182","IL","Chicago",     "60601",today,     True),
+        ("3421903","",          "SUNRISE HAULING LLC",         "David Chen",   "(404) 555-0193","GA","Atlanta",     "30301",today,     False),
+        ("3421904","MC-1234570","BLUE RIDGE CARRIERS LLC",     "Mike Thornton","(828) 555-0104","NC","Asheville",   "28801",yesterday, True),
+        ("3421905","MC-1234571","PACIFIC COAST LOGISTICS INC", "Ana Gutierrez","(503) 555-0115","OR","Portland",    "97201",yesterday, False),
+        ("3421906","",          "MOUNTAIN STATE TRUCKING LLC", "Bob Williams", "(720) 555-0126","CO","Denver",      "80201",yesterday, False),
+        ("3421907","MC-1234573","BAYOU FREIGHT SOLUTIONS LLC", "Lisa Tran",    "(504) 555-0137","LA","New Orleans", "70112",yesterday, True),
+        ("3421908","MC-1234574","IRON HORSE TRANSPORT LLC",    "Tom Bradley",  "(602) 555-0148","AZ","Phoenix",     "85001",today,     False),
     ]
-
     return [{
         "dot_number": dot, "mc_number": mc, "company_name": name,
         "owner_name": owner, "phone": phone, "email": "",
