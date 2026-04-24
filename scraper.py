@@ -1,6 +1,5 @@
-# ================== UPDATED SCRAPER.PY ==================
+# ================== FINAL WORKING SCRAPER.PY ==================
 
-# (imports stay same)
 import os, re, logging, time, random
 from datetime import datetime, timedelta
 
@@ -46,7 +45,7 @@ def safe_get(url, timeout=12):
     except:
         return None
 
-# ── 🔥 NEW FILTER ─────────────────────────────────
+# ── FILTER ───────────────────────────────────────
 
 def is_good_lead(lead):
     name = (lead.get("company_name") or "").lower()
@@ -65,53 +64,8 @@ def is_good_lead(lead):
 
     return True
 
-# ── LAYER: DOT REPORT (FIXED) ─────────────────────
+# ── FETCH DATA ───────────────────────────────────
 
-def layer_dot_report(lead):
-    dot = lead["dot_number"]
-    r = safe_get(f"https://dot.report/usdot/{dot}")
-
-    if not r:
-        return lead
-
-    soup = BeautifulSoup(r.text, "lxml")
-
-    # 🔥 METHOD 1: TABLE PARSE
-    phone = None
-    for row in soup.find_all("tr"):
-        cols = row.find_all("td")
-        if len(cols) >= 2:
-            label = cols[0].get_text(strip=True).lower()
-            if any(x in label for x in ["phone", "tel"]):
-                phone = cols[1].get_text(strip=True)
-                break
-
-    # 🔥 METHOD 2: FULL SCAN
-    if not phone:
-        text = soup.get_text(" ")
-        matches = extract_phones(text)
-        if matches:
-            phone = matches[0]
-
-    # 🔥 SAVE
-    if phone:
-        cleaned = re.sub(r"\D", "", phone)
-        if len(cleaned) == 11 and cleaned.startswith("1"):
-            cleaned = cleaned[1:]
-
-        if len(cleaned) == 10:
-            if not lead["phone"]:
-                lead["phone"] = cleaned
-                lead["phone_source"] = "dot_report"
-                lead["phone_confidence"] = "medium"
-            elif lead["phone"] == cleaned:
-                lead["phone_confidence"] = "high"
-
-            lead["sources_found"] += 1
-
-    return lead
-
-# ── MAIN ─────────────────────────────────────────
 def fetch_new_registrations():
     cutoff = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%dT%H:%M:%S")
     log.info("Fetching registrations since %s...", cutoff[:10])
@@ -166,6 +120,7 @@ def fetch_new_registrations():
     log.info("Fetched %d base leads from Socrata.", len(leads))
     return leads
 
+# ── LAYERS ───────────────────────────────────────
 
 def layer_fmcsa(lead):
     if not FMCSA_API_KEY:
@@ -175,15 +130,11 @@ def layer_fmcsa(lead):
 
     try:
         r = requests.get(url, params={"webKey": FMCSA_API_KEY}, timeout=10)
-
         if r.status_code != 200:
             return lead
 
         data = r.json().get("content", {})
-        if not data:
-            return lead
 
-        # phone
         phone_raw = data.get("phyTelephone") or data.get("mailingTelephone") or ""
         phones = extract_phones(phone_raw)
 
@@ -193,7 +144,6 @@ def layer_fmcsa(lead):
             lead["phone_confidence"] = "high"
             lead["sources_found"] += 1
 
-        # insurance
         allowed = (data.get("allowedToOperate") or "").upper()
         ins_code = data.get("bipdInsuranceOnFile")
         ins_req  = data.get("bipdInsuranceRequired")
@@ -208,15 +158,128 @@ def layer_fmcsa(lead):
         lead["has_insurance"] = allowed == "Y" or ins_status == "insured"
         lead["insurance_status"] = ins_status
 
-    except Exception as e:
-        log.debug(f"FMCSA error {lead['dot_number']}: {e}")
+    except Exception:
+        pass
 
     time.sleep(0.4)
     return lead
 
 
+def layer_dot_report(lead):
+    dot = lead["dot_number"]
+    r = safe_get(f"https://dot.report/usdot/{dot}")
+
+    if not r:
+        return lead
+
+    soup = BeautifulSoup(r.text, "lxml")
+
+    phone = None
+    for row in soup.find_all("tr"):
+        cols = row.find_all("td")
+        if len(cols) >= 2:
+            label = cols[0].get_text(strip=True).lower()
+            if "phone" in label:
+                phone = cols[1].get_text(strip=True)
+                break
+
+    if not phone:
+        matches = extract_phones(soup.get_text(" "))
+        if matches:
+            phone = matches[0]
+
+    if phone:
+        cleaned = re.sub(r"\D", "", phone)
+        if len(cleaned) == 11 and cleaned.startswith("1"):
+            cleaned = cleaned[1:]
+
+        if len(cleaned) == 10:
+            if not lead["phone"]:
+                lead["phone"] = cleaned
+                lead["phone_source"] = "dot_report"
+                lead["phone_confidence"] = "medium"
+            elif lead["phone"] == cleaned:
+                lead["phone_confidence"] = "high"
+
+            lead["sources_found"] += 1
+
+    return lead
 
 
+def layer_aggregator(lead):
+    query = f"{lead['company_name']} {lead['state']} trucking phone"
+    url = f"https://www.bing.com/search?q={requests.utils.quote(query)}"
+
+    r = safe_get(url)
+    if not r:
+        return lead
+
+    text = BeautifulSoup(r.text, "lxml").get_text(" ")
+    phones = extract_phones(text)
+
+    if phones:
+        if not lead["phone"]:
+            lead["phone"] = phones[0]
+            lead["phone_source"] = "aggregator"
+            lead["phone_confidence"] = "medium"
+        elif lead["phone"] == phones[0]:
+            lead["phone_confidence"] = "high"
+
+        lead["sources_found"] += 1
+
+    time.sleep(random.uniform(1.0, 1.5))
+    return lead
+
+# ── FINALIZE ─────────────────────────────────────
+
+def finalize(lead):
+    if lead.get("phone"):
+        phone = re.sub(r"\D", "", lead["phone"])
+        if len(phone) == 11 and phone.startswith("1"):
+            phone = phone[1:]
+        if len(phone) == 10:
+            lead["phone"] = phone
+        else:
+            lead["phone"] = ""
+    return lead
+
+# ── DB INSERT ────────────────────────────────────
+
+def batch_insert(leads):
+    if not leads:
+        return 0
+
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+
+    query = """
+    INSERT INTO leads (
+        dot_number, company_name, phone, phone_source,
+        phone_confidence, sources_found, state,
+        has_insurance, insurance_status, registration_date
+    )
+    VALUES %s
+    ON CONFLICT (dot_number) DO NOTHING
+    """
+
+    values = [(
+        l["dot_number"], l["company_name"], l["phone"],
+        l["phone_source"], l["phone_confidence"],
+        l["sources_found"], l["state"],
+        l["has_insurance"], l["insurance_status"],
+        l["registration_date"]
+    ) for l in leads]
+
+    psycopg2.extras.execute_values(cur, query, values)
+
+    inserted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return inserted
+
+# ── MAIN ─────────────────────────────────────────
 
 def run_scraper():
     log.info("Starting scraper...")
@@ -227,7 +290,6 @@ def run_scraper():
         log.warning("No leads fetched")
         return 0
 
-    # 🔥 FILTER BEFORE
     leads = [l for l in leads if is_good_lead(l)]
     log.info("After trucking filter: %d leads", len(leads))
 
@@ -247,7 +309,6 @@ def run_scraper():
         lead = layer_aggregator(lead)
         lead = finalize(lead)
 
-        # 🔥 HARD FILTER
         if lead.get("phone"):
             stats["skip_phone"] += 1
             continue
@@ -257,7 +318,6 @@ def run_scraper():
             continue
 
         stats["kept"] += 1
-
         batch.append(lead)
 
         if len(batch) >= BATCH_SIZE:
