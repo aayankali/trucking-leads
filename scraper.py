@@ -7,18 +7,20 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 import time
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger(__name__)
+# ── CONFIG ─────────────────────────
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 SODA_URL = "https://data.transportation.gov/resource/az4n-8mr2.json"
 
 DAYS_BACK = 3
-BATCH_SIZE = 100
 PAGE_SIZE = 1000
+BATCH_SIZE = 100
 
-ENRICH_LIMIT = 120
-DELAY = 1.2
+ENRICH_LIMIT = 100
+DELAY = 1.5
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
 
 # ── DB ─────────────────────────
 
@@ -93,7 +95,7 @@ def batch_insert(leads):
 
     return inserted
 
-# ── API FETCH ─────────────────────────
+# ── FETCH API ─────────────────────────
 
 def fetch_leads():
     cutoff = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -132,69 +134,82 @@ def fetch_leads():
 # ── BUILD LEAD ─────────────────────────
 
 def build_lead(row):
-    try:
-        dot = str(row.get("dot_number") or "").strip()
-        if not dot:
-            return None
-
-        return {
-            "dot_number": dot,
-            "mc_number": row.get("mc_mx_ff_number") or "",
-            "company_name": row.get("legal_name") or "",
-            "owner_name": "",
-            "phone": "",
-            "email": "",
-            "address": row.get("phy_street") or "",
-            "city": row.get("phy_city") or "",
-            "state": row.get("phy_state") or "",
-            "zip_code": row.get("phy_zip") or "",
-            "entity_type": row.get("entity_type_desc") or "",
-            "operation_type": row.get("carrier_operation") or "",
-            "cargo_type": "",
-            "drivers": int(row.get("total_drivers") or 0),
-            "power_units": int(row.get("total_power_units") or 0),
-            "status": "A",
-            "added_date": datetime.utcnow(),
-            "registration_date": datetime.utcnow().date(),
-            "has_insurance": False
-        }
-    except:
+    dot = str(row.get("dot_number") or "").strip()
+    if not dot:
         return None
 
-# ── SAFER ENRICHMENT (IMPROVED) ─────────────────────────
+    return {
+        "dot_number": dot,
+        "mc_number": row.get("mc_mx_ff_number") or "",
+        "company_name": row.get("legal_name") or "",
+        "owner_name": "",
+        "phone": "",
+        "email": "",
+        "address": row.get("phy_street") or "",
+        "city": row.get("phy_city") or "",
+        "state": row.get("phy_state") or "",
+        "zip_code": row.get("phy_zip") or "",
+        "entity_type": row.get("entity_type_desc") or "",
+        "operation_type": row.get("carrier_operation") or "",
+        "cargo_type": "",
+        "drivers": int(row.get("total_drivers") or 0),
+        "power_units": int(row.get("total_power_units") or 0),
+        "status": "A",
+        "added_date": datetime.utcnow(),
+        "registration_date": datetime.utcnow().date(),
+        "has_insurance": False
+    }
+
+# ── SAFER ENRICHMENT (FIXED) ─────────────────────────
 
 def enrich_from_safer(dot):
-    url = f"https://safer.fmcsa.dot.gov/query.asp?searchtype=ANY&query_type=queryCarrierSnapshot&query_param=USDOT&query_string={dot}"
+    url = "https://safer.fmcsa.dot.gov/query.asp"
+
+    params = {
+        "searchtype": "ANY",
+        "query_type": "queryCarrierSnapshot",
+        "query_param": "USDOT",
+        "query_string": dot
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
 
     try:
-        r = requests.get(url, timeout=10)
-        soup = BeautifulSoup(r.text, "lxml")
+        r = requests.get(url, params=params, headers=headers, timeout=15)
 
-        text = soup.get_text(" ", strip=True)
+        if r.status_code != 200:
+            return {}
+
+        soup = BeautifulSoup(r.text, "lxml")
+        text = soup.get_text("\n")
+
+        # DEBUG: check if real page loaded
+        if "USDOT Number" not in text:
+            log.warning(f"SAFER BLOCKED for {dot}")
+            return {}
+
+        def extract(label):
+            try:
+                if label in text:
+                    return text.split(label)[1].split("\n")[1].strip()
+            except:
+                pass
+            return ""
 
         data = {
-            "phone": "",
-            "owner": "",
-            "power_units": "",
-            "status": ""
+            "phone": extract("Phone:"),
+            "owner": extract("Legal Name:"),
+            "power_units": extract("Power Units:"),
+            "status": extract("Operating Status:")
         }
-
-        if "Phone:" in text:
-            data["phone"] = text.split("Phone:")[1].split("Fax")[0].strip()
-
-        if "Legal Name:" in text:
-            data["owner"] = text.split("Legal Name:")[1].split("DBA")[0].strip()
-
-        if "Power Units:" in text:
-            data["power_units"] = text.split("Power Units:")[1].split("Drivers")[0].strip()
-
-        if "Operating Status:" in text:
-            data["status"] = text.split("Operating Status:")[1].split("Out of Service")[0].strip()
 
         return data
 
     except Exception as e:
-        log.warning(f"SAFER failed {dot}: {e}")
+        log.warning(f"SAFER error {dot}: {e}")
         return {}
 
 # ── MAIN ─────────────────────────
@@ -210,11 +225,10 @@ def run_scraper():
 
     for i, lead in enumerate(leads):
 
-        # SAFER ENRICHMENT
         if i < ENRICH_LIMIT:
             data = enrich_from_safer(lead["dot_number"])
 
-            if i < 10:
+            if i < 5:
                 log.info(f"DEBUG {lead['dot_number']} → {data}")
 
             if data:
@@ -240,10 +254,7 @@ def run_scraper():
 
             time.sleep(DELAY)
 
-        # 🔥 RELAXED FILTER (NO MORE 0 LEADS)
-        if not lead.get("phone") and i < ENRICH_LIMIT:
-            pass  # allow partially enriched
-
+        # ❗ DO NOT OVER FILTER
         batch.append(lead)
 
         if len(batch) >= BATCH_SIZE:
