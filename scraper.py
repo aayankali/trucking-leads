@@ -8,32 +8,44 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
-# 🔥 CONFIG
 DELAY_MIN = 1.2
 DELAY_MAX = 2.5
 TIMEOUT = 15
-RETRIES = 2
 
-# ⭐ STRONG SOURCES
+# =============================
+# 🔹 FETCH LEADS (FROM YOUR DB / API)
+# =============================
+def fetch_leads():
+    """
+    Replace this with YOUR existing lead fetching logic.
+    This is a fallback so scheduler doesn't break.
+    """
+    try:
+        from database import get_recent_leads  # <-- adjust if needed
+        return get_recent_leads()
+    except:
+        print("[WARN] Could not fetch leads from DB")
+        return []
+
+# =============================
+# 🔹 SOURCES
+# =============================
 def fetch_dot_report(dot):
     try:
         url = f"https://dot.report/{dot}"
         r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+
         if r.status_code != 200:
             return None
 
         soup = BeautifulSoup(r.text, "html.parser")
-
         text = soup.get_text(" ", strip=True)
 
-        phone_match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", text)
-        if phone_match:
-            return phone_match.group(0)
+        match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", text)
+        return match.group(0) if match else None
 
     except:
         return None
-
-    return None
 
 
 def fetch_safer(dot):
@@ -44,14 +56,11 @@ def fetch_safer(dot):
         soup = BeautifulSoup(r.text, "html.parser")
         text = soup.get_text(" ", strip=True)
 
-        phone_match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", text)
-        if phone_match:
-            return phone_match.group(0)
+        match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{3}[-.\s]?\d{4}", text)
+        return match.group(0) if match else None
 
     except:
         return None
-
-    return None
 
 
 def fetch_directory(company):
@@ -63,53 +72,52 @@ def fetch_directory(company):
         soup = BeautifulSoup(r.text, "html.parser")
         text = soup.get_text(" ", strip=True)
 
-        phone_match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", text)
-        if phone_match:
-            return phone_match.group(0)
+        match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", text)
+        return match.group(0) if match else None
 
     except:
         return None
 
-    return None
-
-
-# 🧠 CORE ENRICHMENT ENGINE
+# =============================
+# 🔹 ENRICHMENT
+# =============================
 def enrich_lead(lead):
-    dot = lead["dot_number"]
-    company = lead["company_name"]
+    dot = lead.get("dot_number")
+    company = lead.get("company_name", "")
 
     phones = []
     sources = []
 
-    def add_phone(phone, source):
+    def add(phone, source):
         if phone:
             phones.append(phone)
             sources.append(source)
 
-    # 🔥 Layer 1 — DOT.report (MAIN)
+    # ⭐ Layer 1 — DOT.report
     phone = fetch_dot_report(dot)
-    add_phone(phone, "dot_report")
+    add(phone, "dot_report")
 
     time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
-    # 🔥 Layer 2 — SAFER fallback
+    # ⭐ Layer 2 — SAFER
     if len(phones) < 2:
         phone = fetch_safer(dot)
-        add_phone(phone, "safer")
+        add(phone, "safer")
 
         time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
-    # 🔥 Layer 3 — Directory (Bing)
+    # ⭐ Layer 3 — Directory
     if len(phones) < 2:
         phone = fetch_directory(company)
-        add_phone(phone, "directory")
+        add(phone, "directory")
 
-    # 🧠 CONFIDENCE LOGIC
-    final_phone = None
+    # =============================
+    # 🔹 CONFIDENCE
+    # =============================
+    final_phone = ""
     confidence = "none"
 
     if phones:
-        # Count occurrences
         freq = {}
         for p in phones:
             freq[p] = freq.get(p, 0) + 1
@@ -121,19 +129,26 @@ def enrich_lead(lead):
         else:
             confidence = "medium"
 
-    lead["phone"] = final_phone or ""
+    lead["phone"] = final_phone
     lead["phone_confidence"] = confidence
     lead["sources_found"] = ",".join(sources)
 
     return lead
 
+# =============================
+# 🔹 MAIN ENTRY (FIXED)
+# =============================
+def run_scraper(leads=None):
+    # 🔥 FIX: supports both modes
+    if leads is None:
+        leads = fetch_leads()
 
-# 🚀 MAIN LOOP
-def run_scraper(leads):
+    print(f"[INFO] Running scraper on {len(leads)} leads")
+
     results = []
 
     for i, lead in enumerate(leads):
-        print(f"[{i+1}/{len(leads)}] Enriching DOT {lead['dot_number']}")
+        print(f"[{i+1}/{len(leads)}] Enriching DOT {lead.get('dot_number')}")
 
         enriched = enrich_lead(lead)
 
