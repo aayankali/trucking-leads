@@ -81,7 +81,7 @@ def enrich_lead(lead):
             phones.append(phone)
             sources.append(source)
 
-    # ⭐ Layer 1 — DOT.report (MAIN)
+    # ⭐ Layer 1 — DOT.report
     p = get_phone_from_dot_report(dot)
     add(p, "dot_report")
 
@@ -125,13 +125,18 @@ def enrich_lead(lead):
 
 
 # =============================
-# 🔹 MAIN (UNCHANGED SIGNATURE)
+# 🔹 MAIN (SAFE FOR BOTH CASES)
 # =============================
-def run_scraper(leads):
+def run_scraper(leads=None):
     """
-    DO NOT change this signature.
-    Scheduler already passes leads.
+    Works with:
+    run_scraper()
+    run_scraper(leads)
     """
+
+    if leads is None:
+        print("[WARN] No leads passed — skipping run safely")
+        return []
 
     results = []
 
