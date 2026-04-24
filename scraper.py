@@ -1,14 +1,13 @@
 """
 FMCSA Trucking Lead Scraper
-Downloads the FMCSA Company Census bulk file (updated daily) and extracts
-newly registered trucking companies from the last 7 days.
+Downloads the FMCSA Company Census file from DOT Data Portal (updated daily)
+and extracts newly registered trucking companies from the last 7 days.
 """
 
 import os
 import io
 import csv
 import logging
-import zipfile
 import psycopg2
 import psycopg2.extras
 import requests
@@ -21,11 +20,10 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-DATABASE_URL  = os.environ.get("DATABASE_URL", "")
-FMCSA_API_KEY = os.environ.get("FMCSA_API_KEY", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# FMCSA bulk census file — updated daily, no API key needed
-CENSUS_URL = "https://ai.fmcsa.dot.gov/SMS/files/FMCSA_CENSUS1.zip"
+# FMCSA Company Census File — updated daily, free, no API key needed
+CENSUS_URL = "https://data.transportation.gov/api/views/az4n-8mr2/rows.csv?accessType=DOWNLOAD"
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -96,20 +94,16 @@ def save_lead(lead: dict):
         conn.close()
 
 
-# ── FMCSA Bulk Download ───────────────────────────────────────────────────────
+# ── FMCSA Data Download ───────────────────────────────────────────────────────
 
 def download_census_file() -> io.StringIO:
-    """Download and unzip the FMCSA census file, return as StringIO."""
-    log.info("Downloading FMCSA census file...")
+    """Download the FMCSA Company Census CSV directly from DOT Data Portal."""
+    log.info("Downloading FMCSA census file from DOT Data Portal...")
     try:
-        r = requests.get(CENSUS_URL, timeout=120, stream=True)
+        r = requests.get(CENSUS_URL, timeout=180, stream=True)
         r.raise_for_status()
-        zip_data = io.BytesIO(r.content)
-        with zipfile.ZipFile(zip_data) as z:
-            csv_name = [n for n in z.namelist() if n.endswith(".txt") or n.endswith(".csv")][0]
-            log.info("Found file in zip: %s", csv_name)
-            with z.open(csv_name) as f:
-                content = f.read().decode("latin-1")
+        content = r.content.decode("utf-8", errors="replace")
+        log.info("Download complete. Size: %.1f MB", len(content) / 1_000_000)
         return io.StringIO(content)
     except Exception as e:
         log.error("Failed to download census file: %s", e)
@@ -117,12 +111,16 @@ def download_census_file() -> io.StringIO:
 
 
 def parse_census_row(row: dict, cutoff: datetime) -> dict:
+    """Parse a single row from the FMCSA census CSV."""
     try:
-        reg_raw = row.get("ADD_DATE", "") or row.get("MCS150_DATE", "")
+        # Try multiple possible date field names
+        reg_raw = (row.get("ADD_DATE") or row.get("MCS150_DATE") or
+                   row.get("add_date") or row.get("mcs150_date") or "").strip()
+
         reg_date = None
         for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"):
             try:
-                reg_date = datetime.strptime(reg_raw.strip()[:10], fmt).date()
+                reg_date = datetime.strptime(reg_raw[:10], fmt).date()
                 break
             except Exception:
                 pass
@@ -130,35 +128,38 @@ def parse_census_row(row: dict, cutoff: datetime) -> dict:
         if reg_date is None:
             return None
 
+        # Only keep recent registrations
         if datetime(reg_date.year, reg_date.month, reg_date.day) < cutoff:
             return None
 
-        dot = str(row.get("DOT_NUMBER", "")).strip()
+        dot = str(row.get("DOT_NUMBER") or row.get("dot_number") or "").strip()
         if not dot:
             return None
 
-        bipd = row.get("BIPD_INSURANCE_REQUIRED", "0") or "0"
+        # Insurance check
+        bipd = row.get("BIPD_INSURANCE_REQUIRED") or row.get("bipd_insurance_required") or "0"
         try:
-            has_ins = int(bipd) > 0
+            has_ins = int(str(bipd).strip() or "0") > 0
         except Exception:
             has_ins = False
 
         return {
             "dot_number":        dot,
-            "mc_number":         str(row.get("MC_MX_FF_NUMBER", "") or ""),
-            "company_name":      row.get("LEGAL_NAME", "") or row.get("DBA_NAME", ""),
-            "owner_name":        row.get("PRINCIPAL_NAME", ""),
-            "phone":             row.get("TELEPHONE", ""),
-            "email":             row.get("EMAIL_ADDRESS", ""),
-            "address":           row.get("PHY_STREET", ""),
-            "city":              row.get("PHY_CITY", ""),
-            "state":             row.get("PHY_STATE", ""),
-            "zip_code":          row.get("PHY_ZIP", ""),
-            "entity_type":       row.get("ENTITY_TYPE_DESC", "").strip(),
-            "operation_type":    row.get("CARRIER_OPERATION", "").strip(),
+            "mc_number":         str(row.get("MC_MX_FF_NUMBER") or row.get("mc_mx_ff_number") or ""),
+            "company_name":      (row.get("LEGAL_NAME") or row.get("legal_name") or
+                                  row.get("DBA_NAME") or row.get("dba_name") or ""),
+            "owner_name":        row.get("PRINCIPAL_NAME") or row.get("principal_name") or "",
+            "phone":             row.get("TELEPHONE") or row.get("telephone") or "",
+            "email":             row.get("EMAIL_ADDRESS") or row.get("email_address") or "",
+            "address":           row.get("PHY_STREET") or row.get("phy_street") or "",
+            "city":              row.get("PHY_CITY") or row.get("phy_city") or "",
+            "state":             row.get("PHY_STATE") or row.get("phy_state") or "",
+            "zip_code":          row.get("PHY_ZIP") or row.get("phy_zip") or "",
+            "entity_type":       (row.get("ENTITY_TYPE_DESC") or row.get("entity_type_desc") or "").strip(),
+            "operation_type":    (row.get("CARRIER_OPERATION") or row.get("carrier_operation") or "").strip(),
             "cargo_type":        "",
-            "drivers":           _safe_int(row.get("TOTAL_DRIVERS", 0)),
-            "power_units":       _safe_int(row.get("TOTAL_POWER_UNITS", 0)),
+            "drivers":           _safe_int(row.get("TOTAL_DRIVERS") or row.get("total_drivers")),
+            "power_units":       _safe_int(row.get("TOTAL_POWER_UNITS") or row.get("total_power_units")),
             "status":            "A",
             "added_date":        datetime.utcnow(),
             "registration_date": reg_date,
@@ -185,7 +186,13 @@ def fetch_new_carriers(days_back: int = 7) -> list:
         log.warning("Census download failed — returning demo leads.")
         return _demo_leads()
 
-    reader = csv.DictReader(csv_file, delimiter="\t")
+    # Sniff delimiter and headers
+    sample = csv_file.read(2048)
+    csv_file.seek(0)
+    delimiter = "\t" if sample.count("\t") > sample.count(",") else ","
+    log.info("Detected delimiter: %s", "TAB" if delimiter == "\t" else "COMMA")
+
+    reader = csv.DictReader(csv_file, delimiter=delimiter)
     leads = []
     total_rows = 0
 
