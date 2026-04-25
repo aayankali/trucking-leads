@@ -21,6 +21,13 @@ DAYS_BACK    = 10
 PAGE_SIZE    = 1000
 BATCH_SIZE   = 50
 ENRICH_LIMIT = 100
+UPDATE_ENRICH_LIMIT = 30
+TARGET_CALL_READY = 40
+CANDIDATE_POOL_LIMIT = 1000
+RETRY_CANDIDATE_LIMIT = 300
+RETRY_STALE_HOURS = 72
+SAFER_MAX_CALLS = 20
+SAFER_DELAY_SECONDS = 3.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -65,6 +72,8 @@ LEAD_DEFAULTS = {
     "skip_reason": "",
     "enrichment_errors": "",
     "last_enriched_at": None,
+    "lead_score": 0,
+    "detail_score": 0,
 }
 
 TRUCKING_WORDS = [
@@ -260,6 +269,97 @@ def classify_trucking_lead(lead):
         return True, ""
 
     return False, "weak_trucking_match"
+
+def compute_detail_score(lead):
+    score = 0
+    if lead.get("phone"):
+        score += 35
+    if lead.get("company_name"):
+        score += 10
+    if lead.get("address"):
+        score += 10
+    if lead.get("city") and lead.get("state"):
+        score += 10
+    if lead.get("email"):
+        score += 10
+    if lead.get("website"):
+        score += 10
+    if parse_int(lead.get("power_units")) > 0:
+        score += 8
+    if parse_int(lead.get("drivers")) > 0:
+        score += 5
+    if lead.get("mc_number"):
+        score += 4
+    if lead.get("insurance_status") in ("none", "insured"):
+        score += 8
+    return min(score, 100)
+
+def score_candidate(lead):
+    score = 0
+    is_trucking, reason = classify_trucking_lead(lead)
+    name = (lead.get("company_name") or "").lower()
+    text = " ".join([
+        name,
+        (lead.get("operation_type") or "").lower(),
+        (lead.get("cargo_type") or "").lower(),
+        (lead.get("entity_type") or "").lower(),
+    ])
+
+    if len((lead.get("state") or "").strip()) == 2:
+        score += 20
+    else:
+        score -= 40
+    if is_trucking:
+        score += 45
+    elif reason == "weak_trucking_match":
+        score += 5
+    else:
+        score -= 25
+    if any(w in text for w in TRUCKING_WORDS):
+        score += 25
+    if parse_int(lead.get("power_units")) > 0:
+        score += 20
+    if parse_int(lead.get("drivers")) > 0:
+        score += 15
+    if lead.get("phone"):
+        score += 50
+    if lead.get("email"):
+        score += 8
+    if lead.get("website"):
+        score += 8
+    if lead.get("address") or lead.get("city"):
+        score += 8
+    if any(b in name for b in BAD_WORDS) and not any(w in text for w in TRUCKING_WORDS):
+        score -= 35
+    if lead.get("registration_date"):
+        score += 10
+
+    lead["lead_score"] = score
+    lead["detail_score"] = compute_detail_score(lead)
+    return score
+
+def select_scored_candidates(leads, limit=CANDIDATE_POOL_LIMIT):
+    by_dot = {}
+    for lead in leads:
+        dot = str(lead.get("dot_number") or "").strip()
+        if not dot:
+            continue
+        lead["dot_number"] = dot
+        score_candidate(lead)
+        existing = by_dot.get(dot)
+        if not existing or parse_int(lead.get("lead_score")) > parse_int(existing.get("lead_score")):
+            by_dot[dot] = lead
+    candidates = list(by_dot.values())
+    candidates.sort(
+        key=lambda x: (
+            parse_int(x.get("lead_score")),
+            str(x.get("registration_date") or ""),
+            parse_int(x.get("power_units")),
+            parse_int(x.get("drivers")),
+        ),
+        reverse=True,
+    )
+    return candidates[:limit]
 
 # ── LAYER: DOT REPORT (FIXED) ─────────────────────
 
@@ -476,11 +576,35 @@ def field_like(fields, *needles):
     return ""
 
 
-def layer_aggregator(lead):
+def new_safer_state():
+    return {"calls": 0, "blocked": False, "last_call": 0.0}
+
+def should_use_safer(lead, safer_state):
+    if safer_state.get("blocked"):
+        return False
+    if safer_state.get("calls", 0) >= SAFER_MAX_CALLS:
+        return False
+    return not lead.get("phone") or not lead.get("address") or not lead.get("city")
+
+def layer_aggregator(lead, safer_state=None):
     """Public fallback layer using FMCSA SAFER pages by DOT number."""
     dot = lead.get("dot_number")
     if not dot:
         return lead
+    safer_state = safer_state or new_safer_state()
+
+    if not should_use_safer(lead, safer_state):
+        if safer_state.get("blocked"):
+            add_error(lead, "safer_skipped_blocked")
+        elif safer_state.get("calls", 0) >= SAFER_MAX_CALLS:
+            add_error(lead, "safer_skipped_budget")
+        return lead
+
+    wait_for = SAFER_DELAY_SECONDS - (time.monotonic() - safer_state.get("last_call", 0.0))
+    if wait_for > 0:
+        time.sleep(wait_for + random.uniform(0.1, 0.7))
+    safer_state["last_call"] = time.monotonic()
+    safer_state["calls"] = safer_state.get("calls", 0) + 1
 
     try:
         r = safe_get(
@@ -495,10 +619,19 @@ def layer_aggregator(lead):
             retries=2,
             source="fmcsa_safer",
         )
-        if not r or r.status_code != 200:
+        if not r:
+            add_error(lead, "safer_failed")
+            return lead
+        if r.status_code in (403, 429):
+            safer_state["blocked"] = True
+            add_error(lead, f"safer_blocked_{r.status_code}")
+            return lead
+        if r.status_code != 200:
+            add_error(lead, f"safer_http_{r.status_code}")
             return lead
     except Exception as e:
         log.debug("SAFER error %s: %s", dot, e)
+        add_error(lead, "safer_exception")
         return lead
 
     soup = BeautifulSoup(r.text, "lxml")
@@ -529,7 +662,6 @@ def layer_aggregator(lead):
     if emails:
         apply_email(lead, emails[0], "fmcsa_safer")
 
-    time.sleep(0.2)
     return lead
 
 
@@ -571,6 +703,7 @@ def finalize(lead):
     clean["email_source"] = str(clean.get("email_source") or "").strip()
     clean["website_source"] = str(clean.get("website_source") or "").strip()
     clean["enrichment_errors"] = str(clean.get("enrichment_errors") or "").strip()
+    clean["lead_score"] = parse_int(clean.get("lead_score"))
 
     if clean["insurance_status"] not in ("none", "unknown", "partial", "insured"):
         clean["insurance_status"] = "unknown"
@@ -596,19 +729,18 @@ def finalize(lead):
 
     is_trucking, reason = classify_trucking_lead(clean)
     clean["is_trucking"] = is_trucking
-    if not is_trucking:
-        clean["lead_status"] = "not_trucking"
-        clean["skip_reason"] = reason
-    elif not clean["phone"]:
+    if not clean["phone"]:
         clean["lead_status"] = "needs_phone"
-        clean["skip_reason"] = "no_phone_found"
+        clean["skip_reason"] = reason or "no_phone_found"
     elif clean["has_insurance"] or clean["insurance_status"] == "insured":
         clean["lead_status"] = "insured"
         clean["skip_reason"] = "already_insured"
     else:
         clean["lead_status"] = "call_ready"
-        clean["skip_reason"] = ""
+        clean["skip_reason"] = "" if is_trucking else reason
 
+    clean["detail_score"] = compute_detail_score(clean)
+    clean["lead_score"] = max(clean["lead_score"], score_candidate(clean))
     clean["enriched"] = True
     return clean
 
@@ -653,7 +785,9 @@ def ensure_db():
                 email_source TEXT DEFAULT '',
                 website_source TEXT DEFAULT '',
                 enrichment_errors TEXT DEFAULT '',
-                last_enriched_at TIMESTAMP
+                last_enriched_at TIMESTAMP,
+                lead_score INTEGER DEFAULT 0,
+                detail_score INTEGER DEFAULT 0
             )
         """)
     conn.commit()
@@ -686,6 +820,8 @@ def ensure_db():
         ("website_source", "TEXT", "''"),
         ("enrichment_errors", "TEXT", "''"),
         ("last_enriched_at", "TIMESTAMP", "NULL"),
+        ("lead_score", "INTEGER", "0"),
+        ("detail_score", "INTEGER", "0"),
     ]
     for col, col_type, default in columns:
         try:
@@ -711,6 +847,7 @@ def batch_insert(leads):
         "insurance_status", "phone_source", "phone_confidence", "sources_found",
         "enriched", "is_trucking", "lead_status", "skip_reason", "phone_sources",
         "email_source", "website_source", "enrichment_errors", "last_enriched_at",
+        "lead_score", "detail_score",
     ]
 
     now = datetime.utcnow()
@@ -756,7 +893,9 @@ def batch_insert(leads):
             email_source = COALESCE(NULLIF(EXCLUDED.email_source, ''), leads.email_source),
             website_source = COALESCE(NULLIF(EXCLUDED.website_source, ''), leads.website_source),
             enrichment_errors = COALESCE(NULLIF(EXCLUDED.enrichment_errors, ''), leads.enrichment_errors),
-            last_enriched_at = EXCLUDED.last_enriched_at
+            last_enriched_at = EXCLUDED.last_enriched_at,
+            lead_score = EXCLUDED.lead_score,
+            detail_score = EXCLUDED.detail_score
         RETURNING id
     """
 
@@ -768,6 +907,69 @@ def batch_insert(leads):
         return len(saved)
     finally:
         conn.close()
+
+
+def fetch_existing_dot_map():
+    try:
+        ensure_db()
+        conn = get_db()
+        try:
+            with conn.cursor() as c:
+                c.execute("SELECT dot_number, lead_status, last_enriched_at FROM leads")
+                rows = c.fetchall()
+        finally:
+            conn.close()
+        return {str(r["dot_number"]): dict(r) for r in rows if r.get("dot_number")}
+    except Exception as e:
+        log.debug("Existing DOT lookup skipped: %s", e)
+        return {}
+
+
+def fetch_retry_candidates(limit=RETRY_CANDIDATE_LIMIT):
+    try:
+        ensure_db()
+        conn = get_db()
+        try:
+            with conn.cursor() as c:
+                c.execute("""
+                    SELECT dot_number, mc_number, company_name, owner_name, phone, email, website,
+                           address, city, state, zip_code, entity_type, operation_type, cargo_type,
+                           drivers, power_units, status, registration_date, has_insurance,
+                           insurance_status, phone_source, phone_confidence, phone_sources,
+                           email_source, website_source, sources_found, is_trucking, lead_status,
+                           skip_reason, enrichment_errors, lead_score, detail_score
+                    FROM leads
+                    WHERE lead_status IN ('needs_phone', 'new')
+                      AND (
+                        last_enriched_at IS NULL
+                        OR last_enriched_at < (NOW() AT TIME ZONE 'UTC') - (%s * INTERVAL '1 hour')
+                      )
+                    ORDER BY lead_score DESC, COALESCE(last_enriched_at, added_date) ASC NULLS FIRST
+                    LIMIT %s
+                """, (RETRY_STALE_HOURS, limit))
+                rows = c.fetchall()
+        finally:
+            conn.close()
+        retry_leads = [dict(r) for r in rows]
+        for lead in retry_leads:
+            lead["_candidate_type"] = "update"
+        return retry_leads
+    except Exception as e:
+        log.debug("Retry candidate fetch skipped: %s", e)
+        return []
+
+
+def enrich_candidate(lead, safer_state):
+    lead = layer_fmcsa(lead)
+
+    if not lead.get("phone") or not lead.get("email") or not lead.get("website"):
+        lead = layer_dot_report(lead)
+
+    if should_use_safer(lead, safer_state):
+        lead = layer_aggregator(lead, safer_state)
+
+    lead = layer_contact_inference(lead)
+    return finalize(lead)
 
 
 
@@ -785,27 +987,63 @@ def run_scraper():
         log.warning("No leads fetched")
         return 0
 
-    # Keep pipeline visibility instead of dropping leads before saving.
-    leads.sort(key=lambda x: str(x.get("registration_date") or ""), reverse=True)
-    leads = leads[:ENRICH_LIMIT]
-    log.info("Enriching newest %d leads; all processed leads will be saved with pipeline status.", len(leads))
+    existing_dots = fetch_existing_dot_map()
+    scored_new_pool = select_scored_candidates(leads)
+    fresh_candidates = [
+        lead for lead in scored_new_pool
+        if str(lead.get("dot_number") or "") not in existing_dots
+    ]
+    for lead in fresh_candidates:
+        lead["_candidate_type"] = "new"
+
+    retry_candidates = select_scored_candidates(fetch_retry_candidates(), limit=RETRY_CANDIDATE_LIMIT)
+    for lead in retry_candidates:
+        lead["_candidate_type"] = "update"
+
+    update_budget = min(UPDATE_ENRICH_LIMIT, len(retry_candidates))
+    new_budget = ENRICH_LIMIT - update_budget
+
+    selected_fresh = fresh_candidates[:new_budget]
+    selected_update = retry_candidates[:update_budget]
+
+    if len(selected_fresh) < new_budget:
+        extra_needed = new_budget - len(selected_fresh)
+        selected_update += retry_candidates[update_budget:update_budget + extra_needed]
+
+    if len(selected_update) < update_budget:
+        extra_needed = update_budget - len(selected_update)
+        selected_fresh += fresh_candidates[new_budget:new_budget + extra_needed]
+
+    selected = (selected_fresh + selected_update)[:ENRICH_LIMIT]
+
+    log.info(
+        "Scored %d raw candidates. Existing DOTs: %d | selected new: %d | selected updates: %d | total attempts: %d",
+        len(scored_new_pool), len(existing_dots), len(selected_fresh), len(selected_update), len(selected)
+    )
 
     batch = []
     inserted = 0
+    safer_state = new_safer_state()
+    call_ready = 0
 
     stats = {"call_ready": 0, "needs_phone": 0, "insured": 0, "not_trucking": 0}
+    kind_stats = {"new": 0, "update": 0}
 
-    for i, lead in enumerate(leads):
-        log.info("[%d/%d] DOT %s", i+1, len(leads), lead["dot_number"])
+    for i, lead in enumerate(selected):
+        kind = lead.get("_candidate_type", "new")
+        log.info(
+            "[%d/%d] %s ready=%d/%d score=%s DOT %s",
+            i+1, len(selected), kind, call_ready, TARGET_CALL_READY,
+            lead.get("lead_score", 0), lead["dot_number"]
+        )
 
-        lead = layer_fmcsa(lead)
-        lead = layer_dot_report(lead)
-        lead = layer_aggregator(lead)
-        lead = layer_contact_inference(lead)
-        lead = finalize(lead)
+        lead = enrich_candidate(lead, safer_state)
 
         status = lead.get("lead_status") or "new"
         stats[status] = stats.get(status, 0) + 1
+        kind_stats[kind] = kind_stats.get(kind, 0) + 1
+        if status == "call_ready":
+            call_ready += 1
 
         batch.append(lead)
 
@@ -817,6 +1055,9 @@ def run_scraper():
         inserted += batch_insert(batch)
 
     log.info("Saved: %d", inserted)
+    log.info("Processed new: %d | Processed updates: %d | SAFER calls: %d/%d | SAFER blocked: %s",
+             kind_stats.get("new", 0), kind_stats.get("update", 0),
+             safer_state.get("calls", 0), SAFER_MAX_CALLS, safer_state.get("blocked", False))
     log.info("Call ready: %d | Need phone: %d | Insured: %d | Not trucking: %d",
              stats.get("call_ready", 0), stats.get("needs_phone", 0),
              stats.get("insured", 0), stats.get("not_trucking", 0))
